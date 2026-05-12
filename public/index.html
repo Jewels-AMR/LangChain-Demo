@@ -785,13 +785,55 @@
         }),
       });
 
-      const data = await res.json();
       removeStatus();
 
-      if (data.reply) {
-        appendAssistantMessage(data.reply);
-      } else {
+      if (!res.ok) {
+        const data = await res.json();
         showSystemMsg(`出错了：${data.error}`);
+      } else {
+        // 流式读取 SSE 响应，逐块渲染到气泡中
+        const bubble = createStreamingBubble();
+        let fullText = '';
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          // SSE 格式：每条消息以 \n\n 分隔
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop(); // 最后一段可能不完整，留到下轮
+
+          for (const line of lines) {
+            const data = line.replace(/^data: /, '').trim();
+            if (!data || data === '[DONE]') continue;
+
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.error) {
+                showSystemMsg(`出错了：${parsed.error}`);
+                break;
+              }
+              if (parsed.chunk) {
+                fullText += parsed.chunk;
+                bubble.innerHTML = marked.parse(fullText);
+                // 自动滚动到底部
+                const container = document.getElementById('messages');
+                container.scrollTop = container.scrollHeight;
+              }
+            } catch {}
+          }
+        }
+
+        // 如果没有收到任何内容
+        if (!fullText) {
+          bubble.innerHTML = '<span style="color:#999">未收到回复</span>';
+        }
       }
     } catch (err) {
       removeStatus();
@@ -844,6 +886,21 @@
     `;
 
     appendToMessages(row);
+  }
+
+  /** 创建一个空的 AI 气泡，用于流式写入内容 */
+  function createStreamingBubble() {
+    const row = document.createElement('div');
+    row.className = 'message-row';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble assistant';
+
+    row.innerHTML = `<div class="avatar ai-avatar">👨‍🍳</div>`;
+    row.appendChild(bubble);
+    appendToMessages(row);
+
+    return bubble;
   }
 
   /** 显示处理状态（带动画圆点） */

@@ -70,15 +70,13 @@ const agent = createAgent({
 });
 
 /**
- * 调用 Agent 处理用户消息
+ * 调用 Agent 处理用户消息（一次性返回）
  *
  * @param {string} userMessage - 用户输入的文字
  * @param {string} threadId - 会话 ID，同一个 ID 会保留上下文记忆
  * @returns {string} Agent 的最终回答
  */
 export async function invokeAgent(userMessage, threadId = 'default') {
-  // thread_id 告诉 checkpointer 这条消息属于哪个会话
-  // 同一个 thread_id 的对话历史会被自动加载和保存
   const config = {
     configurable: { thread_id: threadId },
   };
@@ -90,7 +88,41 @@ export async function invokeAgent(userMessage, threadId = 'default') {
     config
   );
 
-  // response.messages 是完整的对话历史数组，最后一条是 AI 的回答
   const lastMessage = response.messages.at(-1);
   return lastMessage.content;
+}
+
+/**
+ * 流式调用 Agent 处理用户消息
+ *
+ * @param {string} userMessage - 用户输入的文字
+ * @param {string} threadId - 会话 ID
+ * @returns {AsyncGenerator} 逐块产出 AI 回复文本
+ */
+export async function* streamAgent(userMessage, threadId = 'default') {
+  const config = {
+    configurable: { thread_id: threadId },
+  };
+
+  const stream = await agent.stream(
+    {
+      messages: [new HumanMessage(userMessage)],
+    },
+    {
+      ...config,
+      streamMode: 'messages',
+    }
+  );
+
+  for await (const [message] of stream) {
+    // 只取 AI 模型输出的文本块，跳过工具调用等非文本内容
+    if (
+      message._getType?.() === 'ai' &&
+      message.content &&
+      typeof message.content === 'string' &&
+      !message.tool_calls?.length
+    ) {
+      yield message.content;
+    }
+  }
 }

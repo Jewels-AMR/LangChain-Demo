@@ -21,7 +21,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
-import { invokeAgent } from './src/agent.js';
+import { invokeAgent, streamAgent } from './src/agent.js';
 import { processDocument } from './src/rag.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -102,16 +102,31 @@ app.post('/chat', async (req, res) => {
 
     console.log(`[Server] 收到消息 (thread: ${threadId}): ${message}`);
 
-    // 如果有图片，把路径附在消息末尾，Agent 看到后会调用 image_analysis 工具
     const fullMessage = imagePath
       ? `${message}\n\n[用户上传了图片，服务器路径：${imagePath}，请调用 image_analysis 工具分析这张图片中的食材]`
       : message;
 
-    const reply = await invokeAgent(fullMessage, threadId);
-    res.json({ reply });
+    // SSE 流式响应
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    for await (const chunk of streamAgent(fullMessage, threadId)) {
+      res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+    }
+
+    // 发送结束标记
+    res.write(`data: [DONE]\n\n`);
+    res.end();
   } catch (err) {
     console.error('[Server] 处理失败:', err);
-    res.status(500).json({ error: err.message });
+    // 如果还没开始写 SSE 头，返回 JSON 错误
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    } else {
+      res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+      res.end();
+    }
   }
 });
 
@@ -231,9 +246,44 @@ app.get('/files', (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`\n🚀 私厨问答管家已启动`);
-  console.log(`📡 访问地址：http://localhost:${PORT}`);
-  console.log(`📁 上传目录：./uploads/`);
-  console.log(`💾 对话存储：./checkpoint.db\n`);
+// -------------------------------------------------------
+// 启动时自动重建向量索引
+//
+// MemoryVectorStore 是内存存储，重启后向量丢失。
+// 扫描 uploads/ 里已有的文档文件，自动重新向量化，
+// 这样重启后不用重新上传文档。
+// -------------------------------------------------------
+async function rebuildIndex() {
+  const uploadsDir = path.join(__dirname, 'uploads');
+  if (!fs.existsSync(uploadsDir)) return;
+
+  const docExts = ['.pdf', '.txt'];
+  const docFiles = fs.readdirSync(uploadsDir).filter((f) =>
+    docExts.includes(path.extname(f).toLowerCase())
+  );
+
+  if (docFiles.length === 0) return;
+
+  console.log(`[启动] 发现 ${docFiles.length} 个文档，正在重建向量索引...`);
+
+  for (const filename of docFiles) {
+    try {
+      const filePath = path.join(uploadsDir, filename);
+      const chunkCount = await processDocument(filePath);
+      console.log(`[启动] ${filename} → ${chunkCount} 个块`);
+    } catch (err) {
+      console.error(`[启动] ${filename} 索引失败:`, err.message);
+    }
+  }
+
+  console.log(`[启动] 向量索引重建完成`);
+}
+
+rebuildIndex().then(() => {
+  app.listen(PORT, () => {
+    console.log(`\n🚀 私厨问答管家已启动`);
+    console.log(`📡 访问地址：http://localhost:${PORT}`);
+    console.log(`📁 上传目录：./uploads/`);
+    console.log(`💾 对话存储：./checkpoint.db\n`);
+  });
 });
