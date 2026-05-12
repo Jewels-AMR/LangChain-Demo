@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>私厨问答管家</title>
+  <!-- marked.js：把 AI 返回的 Markdown 文本渲染成 HTML -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      background: linear-gradient(135deg, #2d6a4f, #40916c);
+      color: white;
+      padding: 0 24px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      flex-shrink: 0;
+    }
+
+    .header-title {
+      font-size: 17px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+    }
+
+    .header-subtitle {
+      font-size: 12px;
+      opacity: 0.75;
+      margin-top: 2px;
+    }
+
+    .new-chat-btn {
+      background: rgba(255,255,255,0.2);
+      color: white;
+      border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 8px;
+      padding: 6px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .new-chat-btn:hover { background: rgba(255,255,255,0.3); }
+
+    /* ── Layout ── */
+    .container {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 260px;
+      background: white;
+      border-right: 1px solid #e8e8e8;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .sidebar-section {
+      padding: 16px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .sidebar-section:last-child { border-bottom: none; }
+
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: #999;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 0;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      user-select: none;
+    }
+
+    .section-title .toggle-icon {
+      font-size: 10px;
+      transition: transform 0.2s;
+    }
+
+    .section-title .toggle-icon.collapsed {
+      transform: rotate(-90deg);
+    }
+
+    .section-body {
+      margin-top: 12px;
+      overflow: hidden;
+      transition: max-height 0.25s ease;
+    }
+
+    .section-body.collapsed {
+      display: none;
+    }
+
+    /* 上传区域 */
+    .upload-area {
+      border: 2px dashed #d9d9d9;
+      border-radius: 10px;
+      padding: 16px 12px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #fafafa;
+    }
+
+    .upload-area:hover {
+      border-color: #40916c;
+      background: #f0f7f4;
+    }
+
+    .upload-area input { display: none; }
+
+    .upload-icon {
+      font-size: 24px;
+      margin-bottom: 6px;
+    }
+
+    .upload-text {
+      font-size: 13px;
+      color: #666;
+      line-height: 1.4;
+    }
+
+    .upload-hint {
+      font-size: 11px;
+      color: #bbb;
+      margin-top: 4px;
+    }
+
+    /* 图片预览 */
+    .image-preview {
+      position: relative;
+      margin-top: 10px;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #e8e8e8;
+    }
+
+    .image-preview img {
+      width: 100%;
+      height: 140px;
+      object-fit: cover;
+      display: block;
+    }
+
+    .image-preview-label {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: linear-gradient(transparent, rgba(0,0,0,0.6));
+      color: white;
+      font-size: 11px;
+      padding: 16px 8px 6px;
+    }
+
+    .remove-image {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      background: rgba(0,0,0,0.5);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 22px;
+      height: 22px;
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* 已上传文件列表 */
+    .file-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 8px 10px;
+      background: #f6fbf8;
+      border-radius: 8px;
+      margin-bottom: 6px;
+      border: 1px solid #d4edda;
+    }
+
+    .file-icon { font-size: 18px; flex-shrink: 0; }
+
+    .file-info { flex: 1; min-width: 0; }
+
+    .file-name {
+      font-size: 12px;
+      color: #2d6a4f;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .file-status {
+      font-size: 11px;
+      color: #888;
+      margin-top: 2px;
+    }
+
+    .empty-hint {
+      font-size: 12px;
+      color: #ccc;
+      text-align: center;
+      padding: 8px 0;
+    }
+
+    /* 会话列表 */
+    .thread-item {
+      padding: 10px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      color: #555;
+      margin-bottom: 4px;
+      transition: background 0.15s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .thread-item:hover { background: #f0f7f4; }
+
+    .thread-item.active {
+      background: #e8f5e9;
+      color: #2d6a4f;
+      font-weight: 500;
+    }
+
+    /* ── Chat Area ── */
+    .chat-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* 欢迎卡片 */
+    .welcome-card {
+      background: white;
+      border-radius: 14px;
+      padding: 24px;
+      text-align: center;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+      max-width: 480px;
+      align-self: center;
+      margin-top: 20px;
+    }
+
+    .welcome-card .emoji { font-size: 40px; margin-bottom: 12px; }
+
+    .welcome-card h2 {
+      font-size: 17px;
+      color: #2d6a4f;
+      margin-bottom: 8px;
+    }
+
+    .welcome-card p {
+      font-size: 13px;
+      color: #888;
+      line-height: 1.6;
+    }
+
+    .welcome-tips {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 16px;
+      text-align: left;
+    }
+
+    .tip-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #555;
+      background: #f6fbf8;
+      padding: 8px 12px;
+      border-radius: 8px;
+    }
+
+    /* 消息行（包含头像+气泡） */
+    .message-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+
+    .message-row.user { flex-direction: row-reverse; }
+
+    .avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+    }
+
+    .avatar.user-avatar { background: #2d6a4f; }
+    .avatar.ai-avatar { background: #f0f7f4; border: 1px solid #d4edda; }
+
+    /* 消息气泡 */
+    .bubble {
+      max-width: calc(100% - 80px);
+      padding: 12px 16px;
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.7;
+      word-break: break-word;
+    }
+
+    .bubble.user {
+      background: #2d6a4f;
+      color: white;
+      border-top-right-radius: 4px;
+    }
+
+    .bubble.assistant {
+      background: white;
+      color: #333;
+      border-top-left-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+
+    /* Markdown 渲染样式 */
+    .bubble.assistant h1,
+    .bubble.assistant h2,
+    .bubble.assistant h3 {
+      color: #2d6a4f;
+      margin: 14px 0 6px;
+      font-size: 15px;
+    }
+
+    .bubble.assistant h1:first-child,
+    .bubble.assistant h2:first-child,
+    .bubble.assistant h3:first-child { margin-top: 0; }
+
+    .bubble.assistant p { margin: 6px 0; }
+
+    .bubble.assistant ul,
+    .bubble.assistant ol {
+      padding-left: 20px;
+      margin: 6px 0;
+    }
+
+    .bubble.assistant li { margin: 4px 0; }
+
+    .bubble.assistant strong { color: #1b4332; }
+
+    .bubble.assistant hr {
+      border: none;
+      border-top: 1px solid #e8e8e8;
+      margin: 12px 0;
+    }
+
+    .bubble.assistant code {
+      background: #f5f5f5;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    /* 图片附件预览（消息中） */
+    .message-image {
+      max-width: 200px;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+
+    .message-image img {
+      width: 100%;
+      display: block;
+    }
+
+    /* 状态提示（思考中、分析图片中等） */
+    .status-message {
+      align-self: center;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: white;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      color: #888;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      background: #40916c;
+      border-radius: 50%;
+      animation: pulse 1.2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.8); }
+    }
+
+    /* ── Input Area ── */
+    .input-area {
+      background: white;
+      border-top: 1px solid #e8e8e8;
+      padding: 12px 16px;
+    }
+
+    /* 待发送的图片预览条 */
+    .pending-image-bar {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      background: #f6fbf8;
+      border: 1px solid #d4edda;
+      border-radius: 8px;
+      padding: 6px 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: #2d6a4f;
+    }
+
+    .pending-image-bar.show { display: flex; }
+
+    .pending-image-bar img {
+      width: 36px;
+      height: 36px;
+      border-radius: 4px;
+      object-fit: cover;
+    }
+
+    .pending-image-bar .clear-btn {
+      margin-left: auto;
+      background: none;
+      border: none;
+      color: #999;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0 4px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    .input-row textarea {
+      flex: 1;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 14px;
+      resize: none;
+      outline: none;
+      font-family: inherit;
+      min-height: 44px;
+      max-height: 120px;
+      line-height: 1.5;
+      transition: border-color 0.2s;
+    }
+
+    .input-row textarea:focus { border-color: #40916c; }
+
+    .send-btn {
+      background: #2d6a4f;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      width: 44px;
+      height: 44px;
+      font-size: 18px;
+      cursor: pointer;
+      transition: background 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .send-btn:hover { background: #1b4332; }
+    .send-btn:disabled { background: #ccc; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div>
+    <div class="header-title">私厨问答管家</div>
+    <div class="header-subtitle">上传食材图片或描述食材，获取专属菜谱推荐</div>
+  </div>
+  <button class="new-chat-btn" onclick="startNewChat()">+ 新对话</button>
+</header>
+
+<div class="container">
+
+  <!-- 左侧边栏 -->
+  <div class="sidebar">
+
+    <!-- 图片上传 -->
+    <div class="sidebar-section">
+      <div class="section-title" onclick="toggleSection(this)">上传食材图片 <span class="toggle-icon">▼</span></div>
+      <div class="section-body">
+        <div class="upload-area" onclick="document.getElementById('imgInput').click()">
+          <input type="file" id="imgInput" accept=".jpg,.jpeg,.png,.webp"
+                 onchange="uploadImage(this)" />
+          <div class="upload-icon">📷</div>
+          <div class="upload-text">点击上传食材照片</div>
+          <div class="upload-hint">支持 JPG / PNG / WebP</div>
+        </div>
+        <!-- 图片上传后显示预览 -->
+        <div class="image-preview" id="imagePreview" style="display:none;">
+          <img id="previewImg" src="" alt="预览" />
+          <div class="image-preview-label" id="previewLabel"></div>
+          <button class="remove-image" onclick="removeImage()" title="移除图片">✕</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 文档上传 -->
+    <div class="sidebar-section">
+      <div class="section-title" onclick="toggleSection(this)">上传菜谱文档 <span class="toggle-icon">▼</span></div>
+      <div class="section-body">
+        <div class="upload-area" onclick="document.getElementById('docInput').click()">
+          <input type="file" id="docInput" accept=".pdf,.txt"
+                 onchange="uploadDocument(this)" />
+          <div class="upload-icon">📄</div>
+          <div class="upload-text">点击上传文档</div>
+          <div class="upload-hint">支持 PDF / TXT</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 已上传文件 -->
+    <div class="sidebar-section">
+      <div class="section-title" onclick="toggleSection(this)">已上传文件 <span class="toggle-icon">▼</span></div>
+      <div class="section-body">
+        <div id="fileList">
+          <div class="empty-hint">暂无文件</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 历史会话 -->
+    <div class="sidebar-section">
+      <div class="section-title" onclick="toggleSection(this)">历史会话 <span class="toggle-icon">▼</span></div>
+      <div class="section-body">
+        <div id="threadList">
+          <div class="empty-hint">暂无历史会话</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 右侧聊天区 -->
+  <div class="chat-area">
+    <div class="messages" id="messages">
+
+      <!-- 欢迎卡片 -->
+      <div class="welcome-card">
+        <div class="emoji">👨‍🍳</div>
+        <h2>你好，我是你的私人厨师</h2>
+        <p>上传冰箱里的食材照片，或直接告诉我你有哪些食材，我来为你推荐最合适的菜谱。</p>
+        <div class="welcome-tips">
+          <div class="tip-item">📷 上传食材图片，自动识别并推荐菜谱</div>
+          <div class="tip-item">💬 直接描述食材，例如"我有番茄鸡蛋"</div>
+          <div class="tip-item">📄 上传菜谱文档，基于文档内容问答</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 输入区 -->
+    <div class="input-area">
+      <!-- 待发送图片预览条（选择图片后显示） -->
+      <div class="pending-image-bar" id="pendingImageBar">
+        <img id="pendingThumb" src="" alt="" />
+        <span id="pendingImageName">图片已就绪，发送消息时一并提交</span>
+        <button class="clear-btn" onclick="removeImage()">✕</button>
+      </div>
+
+      <div class="input-row">
+        <textarea
+          id="userInput"
+          placeholder="描述你的食材，或上传图片后发送..."
+          rows="1"
+          onkeydown="handleKey(event)"
+          oninput="autoResize(this)"
+        ></textarea>
+        <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="发送">
+          ➤
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  /** 折叠/展开侧边栏区块 */
+  function toggleSection(titleEl) {
+    const body = titleEl.nextElementSibling;
+    const icon = titleEl.querySelector('.toggle-icon');
+    body.classList.toggle('collapsed');
+    icon.classList.toggle('collapsed');
+  }
+
+  // ── 状态变量 ──
+  let currentImagePath = null;       // 已上传图片在服务器的路径
+  let currentImageDataUrl = null;    // 图片本地预览用的 DataURL
+
+  // 会话 ID：优先从 localStorage 恢复，保证刷新后回到同一个会话
+  let threadId = localStorage.getItem('currentThreadId') || `thread_${Date.now()}`;
+  localStorage.setItem('currentThreadId', threadId);
+
+  // ── 图片上传 ──
+
+  /**
+   * 上传图片文件
+   * 上传成功后：在侧边栏显示预览 + 在输入区显示待发送提示
+   */
+  async function uploadImage(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    // 本地生成预览 DataURL（不需要等服务器，立即显示）
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      currentImageDataUrl = e.target.result;
+
+      // 侧边栏预览
+      document.getElementById('previewImg').src = currentImageDataUrl;
+      document.getElementById('previewLabel').textContent = file.name;
+      document.getElementById('imagePreview').style.display = 'block';
+
+      // 输入区提示条
+      document.getElementById('pendingThumb').src = currentImageDataUrl;
+      document.getElementById('pendingImageName').textContent =
+        `${file.name} · 发送消息时一并提交`;
+      document.getElementById('pendingImageBar').classList.add('show');
+    };
+    reader.readAsDataURL(file);
+
+    // 上传到服务器
+    showStatus('正在上传图片...');
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+      removeStatus();
+
+      if (data.success && data.type === 'image') {
+        currentImagePath = data.filePath; // 保存服务器路径
+        addFileToList('🖼️', file.name, '图片已就绪');
+      } else {
+        showSystemMsg(`上传失败：${data.error}`);
+      }
+    } catch (err) {
+      removeStatus();
+      showSystemMsg(`上传出错：${err.message}`);
+    }
+
+    input.value = '';
+  }
+
+  /** 移除已选图片 */
+  function removeImage() {
+    currentImagePath = null;
+    currentImageDataUrl = null;
+    document.getElementById('imagePreview').style.display = 'none';
+    document.getElementById('pendingImageBar').classList.remove('show');
+    document.getElementById('imgInput').value = '';
+  }
+
+  // ── 文档上传 ──
+
+  /**
+   * 上传文档（PDF / TXT），服务端会自动切块向量化
+   */
+  async function uploadDocument(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    showStatus(`正在处理文档 ${file.name}，建立索引中...`);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+      removeStatus();
+
+      if (data.success) {
+        addFileToList('📄', file.name, data.message);
+        showSystemMsg(`文档"${file.name}"已建立索引，可以直接提问了`);
+      } else {
+        showSystemMsg(`上传失败：${data.error}`);
+      }
+    } catch (err) {
+      removeStatus();
+      showSystemMsg(`上传出错：${err.message}`);
+    }
+
+    input.value = '';
+  }
+
+  // ── 发送消息 ──
+
+  async function sendMessage() {
+    const textarea = document.getElementById('userInput');
+    const message = textarea.value.trim();
+
+    // 消息和图片至少有一个
+    if (!message && !currentImagePath) return;
+
+    const sendText = message || '请分析这张图片中的食材并推荐菜谱';
+
+    document.getElementById('sendBtn').disabled = true;
+    textarea.value = '';
+    autoResize(textarea);
+
+    // 显示用户消息气泡（如果有图片，在气泡上方显示图片缩略图）
+    appendUserMessage(sendText, currentImageDataUrl);
+
+    // 根据是否有图片显示不同的状态提示
+    if (currentImagePath) {
+      showStatus('正在识别食材，联网搜索菜谱中...');
+    } else {
+      showStatus('思考中...');
+    }
+
+    try {
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: sendText,
+          threadId,
+          imagePath: currentImagePath,
+        }),
+      });
+
+      const data = await res.json();
+      removeStatus();
+
+      if (data.reply) {
+        appendAssistantMessage(data.reply);
+      } else {
+        showSystemMsg(`出错了：${data.error}`);
+      }
+    } catch (err) {
+      removeStatus();
+      showSystemMsg(`请求失败：${err.message}`);
+    }
+
+    // 发送后清除图片状态
+    removeImage();
+    document.getElementById('sendBtn').disabled = false;
+    textarea.focus();
+
+    // 刷新会话列表（新对话会出现在侧边栏）
+    loadThreadList();
+  }
+
+  // ── 消息渲染 ──
+
+  /** 渲染用户消息（右侧气泡，可附图片缩略图） */
+  function appendUserMessage(text, imageDataUrl) {
+    const row = document.createElement('div');
+    row.className = 'message-row user';
+
+    let imageHtml = '';
+    if (imageDataUrl) {
+      imageHtml = `<div class="message-image"><img src="${imageDataUrl}" alt="食材图片" /></div>`;
+    }
+
+    row.innerHTML = `
+      <div class="avatar user-avatar">👤</div>
+      <div>
+        ${imageHtml}
+        <div class="bubble user">${escapeHtml(text)}</div>
+      </div>
+    `;
+
+    appendToMessages(row);
+  }
+
+  /** 渲染 AI 消息（左侧气泡，支持 Markdown） */
+  function appendAssistantMessage(text) {
+    const row = document.createElement('div');
+    row.className = 'message-row';
+
+    // marked.parse() 把 Markdown 转成 HTML
+    const html = marked.parse(text);
+
+    row.innerHTML = `
+      <div class="avatar ai-avatar">👨‍🍳</div>
+      <div class="bubble assistant">${html}</div>
+    `;
+
+    appendToMessages(row);
+  }
+
+  /** 显示处理状态（带动画圆点） */
+  function showStatus(text) {
+    removeStatus(); // 防止重复
+    const el = document.createElement('div');
+    el.className = 'status-message';
+    el.id = 'statusMsg';
+    el.innerHTML = `<div class="status-dot"></div><span>${text}</span>`;
+    appendToMessages(el);
+  }
+
+  /** 移除状态提示 */
+  function removeStatus() {
+    document.getElementById('statusMsg')?.remove();
+  }
+
+  /** 显示系统提示（居中小字） */
+  function showSystemMsg(text) {
+    const el = document.createElement('div');
+    el.className = 'status-message';
+    el.style.cssText = 'background:#fff8e1; color:#999;';
+    el.textContent = text;
+    appendToMessages(el);
+  }
+
+  // ── 工具函数 ──
+
+  function appendToMessages(el) {
+    const container = document.getElementById('messages');
+    container.appendChild(el);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function addFileToList(icon, name, status) {
+    const list = document.getElementById('fileList');
+    // 清除"暂无文件"提示
+    const empty = list.querySelector('.empty-hint');
+    if (empty) empty.remove();
+
+    const item = document.createElement('div');
+    item.className = 'file-item';
+    item.innerHTML = `
+      <div class="file-icon">${icon}</div>
+      <div class="file-info">
+        <div class="file-name" title="${name}">${name}</div>
+        <div class="file-status">${status}</div>
+      </div>
+    `;
+    list.appendChild(item);
+  }
+
+  /** Enter 发送，Shift+Enter 换行 */
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
+  /** 自动撑高输入框 */
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+
+  /** 转义 HTML 特殊字符，防止 XSS */
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ── 历史会话管理 ──
+
+  /** 加载历史会话列表 */
+  async function loadThreadList() {
+    try {
+      const res = await fetch('/threads');
+      const data = await res.json();
+      const list = document.getElementById('threadList');
+
+      if (!data.threads || data.threads.length === 0) {
+        list.innerHTML = '<div class="empty-hint">暂无历史会话</div>';
+        return;
+      }
+
+      list.innerHTML = '';
+      for (const t of data.threads) {
+        const item = document.createElement('div');
+        item.className = 'thread-item' + (t.threadId === threadId ? ' active' : '');
+        item.dataset.threadId = t.threadId;
+        item.textContent = t.preview || '新对话';
+        item.title = t.preview || '新对话';
+        item.onclick = () => switchThread(t.threadId);
+        list.appendChild(item);
+      }
+    } catch (err) {
+      console.error('加载会话列表失败:', err);
+    }
+  }
+
+  /** 切换到指定会话 */
+  async function switchThread(newThreadId) {
+    if (newThreadId === threadId) return;
+
+    threadId = newThreadId;
+    localStorage.setItem('currentThreadId', threadId);
+
+    // 更新侧边栏选中状态
+    document.querySelectorAll('.thread-item').forEach((el) => {
+      el.classList.toggle('active', el.dataset.threadId === newThreadId);
+    });
+
+    // 清除图片状态
+    removeImage();
+
+    // 加载该会话的历史消息
+    await loadThreadMessages(newThreadId);
+  }
+
+  /** 加载指定会话的历史消息并渲染到聊天区 */
+  async function loadThreadMessages(tid) {
+    const container = document.getElementById('messages');
+    container.innerHTML = ''; // 清空当前消息
+
+    try {
+      const res = await fetch(`/threads/${encodeURIComponent(tid)}/messages`);
+      const data = await res.json();
+
+      if (!data.messages || data.messages.length === 0) {
+        // 显示欢迎卡片
+        container.innerHTML = `
+          <div class="welcome-card">
+            <div class="emoji">👨‍🍳</div>
+            <h2>你好，我是你的私人厨师</h2>
+            <p>上传冰箱里的食材照片，或直接告诉我你有哪些食材，我来为你推荐最合适的菜谱。</p>
+            <div class="welcome-tips">
+              <div class="tip-item">📷 上传食材图片，自动识别并推荐菜谱</div>
+              <div class="tip-item">💬 直接描述食材，例如"我有番茄鸡蛋"</div>
+              <div class="tip-item">📄 上传菜谱文档，基于文档内容问答</div>
+            </div>
+          </div>`;
+        return;
+      }
+
+      for (const msg of data.messages) {
+        if (msg.role === 'user') {
+          // 如果有图片，用服务器 URL 显示
+          const imgUrl = msg.imagePath ? `/${msg.imagePath}` : null;
+          appendUserMessage(msg.content, imgUrl);
+        } else if (msg.role === 'assistant') {
+          appendAssistantMessage(msg.content);
+        }
+      }
+    } catch (err) {
+      console.error('加载历史消息失败:', err);
+      showSystemMsg('加载历史消息失败');
+    }
+  }
+
+  /** 新建对话 */
+  function startNewChat() {
+    threadId = `thread_${Date.now()}`;
+    localStorage.setItem('currentThreadId', threadId);
+
+    // 清空聊天区，显示欢迎卡片
+    const container = document.getElementById('messages');
+    container.innerHTML = `
+      <div class="welcome-card">
+        <div class="emoji">👨‍🍳</div>
+        <h2>你好，我是你的私人厨师</h2>
+        <p>上传冰箱里的食材照片，或直接告诉我你有哪些食材，我来为你推荐最合适的菜谱。</p>
+        <div class="welcome-tips">
+          <div class="tip-item">📷 上传食材图片，自动识别并推荐菜谱</div>
+          <div class="tip-item">💬 直接描述食材，例如"我有番茄鸡蛋"</div>
+          <div class="tip-item">📄 上传菜谱文档，基于文档内容问答</div>
+        </div>
+      </div>`;
+
+    // 清除图片状态
+    removeImage();
+
+    // 更新侧边栏选中状态
+    document.querySelectorAll('.thread-item').forEach((el) => el.classList.remove('active'));
+  }
+
+  /** 加载已上传的文件列表 */
+  async function loadFileList() {
+    try {
+      const res = await fetch('/files');
+      const data = await res.json();
+      if (!data.files || data.files.length === 0) return;
+
+      const list = document.getElementById('fileList');
+      list.innerHTML = '';
+      for (const f of data.files) {
+        const icon = f.type === 'image' ? '🖼️' : '📄';
+        const status = f.type === 'image' ? '图片已上传' : '文档已上传';
+        addFileToList(icon, f.filename, status);
+      }
+    } catch (err) {
+      console.error('加载文件列表失败:', err);
+    }
+  }
+
+  // ── 页面初始化 ──
+
+  // 页面加载时：加载文件列表 + 会话列表 + 恢复当前会话的历史消息
+  (async function init() {
+    await Promise.all([loadFileList(), loadThreadList()]);
+    await loadThreadMessages(threadId);
+  })();
+</script>
+
+</body>
+</html>

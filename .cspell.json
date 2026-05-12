@@ -1,0 +1,14 @@
+{
+  "version": "0.2",
+  "words": [
+    "langchain",
+    "langgraph",
+    "checkpointer",
+    "deepseek",
+    "tavily",
+    "vectorstores",
+    "textsplitters",
+    "dashscope",
+    "openai"
+  ]
+}
