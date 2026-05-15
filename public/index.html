@@ -252,6 +252,101 @@
       font-weight: 500;
     }
 
+    /* 删除按钮（会话和文件通用） */
+    .delete-btn {
+      background: none;
+      border: none;
+      color: #ccc;
+      cursor: pointer;
+      font-size: 14px;
+      padding: 0 4px;
+      flex-shrink: 0;
+      line-height: 1;
+      transition: color 0.15s;
+    }
+
+    .delete-btn:hover { color: #d93025; }
+
+    .thread-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .thread-item .thread-text {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .thread-item .delete-btn { visibility: hidden; }
+    .thread-item:hover .delete-btn { visibility: visible; }
+
+    .file-item .delete-btn { visibility: hidden; }
+    .file-item:hover .delete-btn { visibility: visible; }
+
+    /* 多选管理模式 */
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .manage-btn {
+      font-size: 11px;
+      color: #40916c;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0 2px;
+      font-weight: 500;
+    }
+
+    .manage-btn:hover { color: #2d6a4f; }
+
+    .batch-bar {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0;
+      margin-bottom: 6px;
+    }
+
+    .batch-bar.show { display: flex; }
+
+    .batch-bar label {
+      font-size: 12px;
+      color: #666;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .batch-delete-btn {
+      font-size: 11px;
+      color: white;
+      background: #d93025;
+      border: none;
+      border-radius: 4px;
+      padding: 3px 10px;
+      cursor: pointer;
+    }
+
+    .batch-delete-btn:hover { background: #b71c1c; }
+    .batch-delete-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+    /* 选择模式下的 checkbox */
+    .item-checkbox {
+      display: none;
+      flex-shrink: 0;
+    }
+
+    .select-mode .item-checkbox { display: inline-block; }
+    .select-mode .delete-btn { display: none !important; }
+
     /* ── Chat Area ── */
     .chat-area {
       flex: 1;
@@ -320,9 +415,22 @@
       display: flex;
       gap: 10px;
       align-items: flex-start;
+      width: 100%;
     }
 
     .message-row.user { flex-direction: row-reverse; }
+
+    .message-content {
+      max-width: min(720px, calc(100% - 48px));
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .message-row.user .message-content {
+      align-items: flex-end;
+    }
 
     .avatar {
       width: 34px;
@@ -340,18 +448,19 @@
 
     /* 消息气泡 */
     .bubble {
-      max-width: calc(100% - 80px);
+      max-width: 100%;
       padding: 12px 16px;
       border-radius: 14px;
       font-size: 14px;
       line-height: 1.7;
-      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .bubble.user {
       background: #2d6a4f;
       color: white;
       border-top-right-radius: 4px;
+      white-space: pre-wrap;
     }
 
     .bubble.assistant {
@@ -399,6 +508,16 @@
       font-size: 12px;
     }
 
+    .bubble.assistant img {
+      max-width: min(320px, 100%);
+      max-height: 220px;
+      object-fit: cover;
+      border-radius: 8px;
+      display: block;
+      margin: 8px 0;
+      border: 1px solid #e8e8e8;
+    }
+
     /* 图片附件预览（消息中） */
     .message-image {
       max-width: 200px;
@@ -437,6 +556,56 @@
     @keyframes pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
       50% { opacity: 0.4; transform: scale(0.8); }
+    }
+
+    /* Agent 工具执行步骤 */
+    .agent-steps {
+      align-self: center;
+      width: min(520px, 100%);
+      background: white;
+      border: 1px solid #e8e8e8;
+      border-radius: 12px;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+
+    .agent-step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #666;
+      line-height: 1.4;
+    }
+
+    .agent-step-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #40916c;
+      flex-shrink: 0;
+    }
+
+    .agent-step.running .agent-step-dot {
+      animation: pulse 1.2s infinite;
+    }
+
+    .agent-step.done .agent-step-dot {
+      background: #52a36a;
+    }
+
+    .agent-step.error .agent-step-dot {
+      background: #d93025;
+    }
+
+    .agent-step-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     /* ── Input Area ── */
@@ -575,8 +744,15 @@
 
     <!-- 已上传文件 -->
     <div class="sidebar-section">
-      <div class="section-title" onclick="toggleSection(this)">已上传文件 <span class="toggle-icon">▼</span></div>
+      <div class="section-header">
+        <div class="section-title" onclick="toggleSection(this)">已上传文件 <span class="toggle-icon">▼</span></div>
+        <button class="manage-btn" onclick="toggleSelectMode('file')">管理</button>
+      </div>
       <div class="section-body">
+        <div class="batch-bar" id="fileBatchBar">
+          <label><input type="checkbox" onchange="toggleSelectAll('file', this.checked)"> 全选</label>
+          <button class="batch-delete-btn" onclick="batchDeleteFiles()" disabled id="fileBatchBtn">删除选中</button>
+        </div>
         <div id="fileList">
           <div class="empty-hint">暂无文件</div>
         </div>
@@ -585,8 +761,15 @@
 
     <!-- 历史会话 -->
     <div class="sidebar-section">
-      <div class="section-title" onclick="toggleSection(this)">历史会话 <span class="toggle-icon">▼</span></div>
+      <div class="section-header">
+        <div class="section-title" onclick="toggleSection(this)">历史会话 <span class="toggle-icon">▼</span></div>
+        <button class="manage-btn" onclick="toggleSelectMode('thread')">管理</button>
+      </div>
       <div class="section-body">
+        <div class="batch-bar" id="threadBatchBar">
+          <label><input type="checkbox" onchange="toggleSelectAll('thread', this.checked)"> 全选</label>
+          <button class="batch-delete-btn" onclick="batchDeleteThreads()" disabled id="threadBatchBtn">删除选中</button>
+        </div>
         <div id="threadList">
           <div class="empty-hint">暂无历史会话</div>
         </div>
@@ -651,9 +834,11 @@
   // ── 状态变量 ──
   let currentImagePath = null;       // 已上传图片在服务器的路径
   let currentImageDataUrl = null;    // 图片本地预览用的 DataURL
+  let currentAgentSteps = null;      // 当前这次请求的 Agent 步骤面板
+  let activeToolStepEls = new Map(); // tool_call_id -> 步骤 DOM
 
-  // 会话 ID：优先从 localStorage 恢复，保证刷新后回到同一个会话
-  let threadId = localStorage.getItem('currentThreadId') || `thread_${Date.now()}`;
+  // 会话 ID：每次启动默认创建新对话
+  let threadId = `thread_${Date.now()}`;
   localStorage.setItem('currentThreadId', threadId);
 
   // ── 图片上传 ──
@@ -766,6 +951,7 @@
 
     // 显示用户消息气泡（如果有图片，在气泡上方显示图片缩略图）
     appendUserMessage(sendText, currentImageDataUrl);
+    resetAgentSteps();
 
     // 根据是否有图片显示不同的状态提示
     if (currentImagePath) {
@@ -792,7 +978,7 @@
         showSystemMsg(`出错了：${data.error}`);
       } else {
         // 流式读取 SSE 响应，逐块渲染到气泡中
-        const bubble = createStreamingBubble();
+        let bubble = null;
         let fullText = '';
 
         const reader = res.body.getReader();
@@ -819,8 +1005,25 @@
                 showSystemMsg(`出错了：${parsed.error}`);
                 break;
               }
-              if (parsed.chunk) {
-                fullText += parsed.chunk;
+
+              // Agent loop 事件：模型决定调用工具时，先显示“正在...”
+              if (parsed.type === 'tool_start') {
+                appendAgentStep(parsed);
+                continue;
+              }
+
+              // Agent loop 事件：工具返回结果时，把对应步骤标记为完成/失败
+              if (parsed.type === 'tool_result') {
+                completeAgentStep(parsed);
+                continue;
+              }
+
+              // 文本事件：模型最终回答的流式 token。
+              // parsed.chunk 是旧格式兼容，parsed.content 是新格式。
+              const textChunk = parsed.type === 'text' ? parsed.content : parsed.chunk;
+              if (textChunk) {
+                if (!bubble) bubble = createStreamingBubble();
+                fullText += textChunk;
                 bubble.innerHTML = marked.parse(fullText);
                 // 自动滚动到底部
                 const container = document.getElementById('messages');
@@ -832,6 +1035,7 @@
 
         // 如果没有收到任何内容
         if (!fullText) {
+          if (!bubble) bubble = createStreamingBubble();
           bubble.innerHTML = '<span style="color:#999">未收到回复</span>';
         }
       }
@@ -863,7 +1067,7 @@
 
     row.innerHTML = `
       <div class="avatar user-avatar">👤</div>
-      <div>
+      <div class="message-content">
         ${imageHtml}
         <div class="bubble user">${escapeHtml(text)}</div>
       </div>
@@ -882,7 +1086,9 @@
 
     row.innerHTML = `
       <div class="avatar ai-avatar">👨‍🍳</div>
-      <div class="bubble assistant">${html}</div>
+      <div class="message-content">
+        <div class="bubble assistant">${html}</div>
+      </div>
     `;
 
     appendToMessages(row);
@@ -897,7 +1103,10 @@
     bubble.className = 'bubble assistant';
 
     row.innerHTML = `<div class="avatar ai-avatar">👨‍🍳</div>`;
-    row.appendChild(bubble);
+    const content = document.createElement('div');
+    content.className = 'message-content';
+    content.appendChild(bubble);
+    row.appendChild(content);
     appendToMessages(row);
 
     return bubble;
@@ -918,6 +1127,65 @@
     document.getElementById('statusMsg')?.remove();
   }
 
+  /** 重置本轮 Agent 步骤状态，不清除历史消息里的旧步骤 */
+  function resetAgentSteps() {
+    currentAgentSteps = null;
+    activeToolStepEls = new Map();
+  }
+
+  /** 确保本轮请求有一个工具执行步骤面板 */
+  function ensureAgentSteps() {
+    if (currentAgentSteps) return currentAgentSteps;
+
+    currentAgentSteps = document.createElement('div');
+    currentAgentSteps.className = 'agent-steps';
+    appendToMessages(currentAgentSteps);
+    return currentAgentSteps;
+  }
+
+  /** 添加一个正在执行的工具步骤 */
+  function appendAgentStep(event) {
+    const panel = ensureAgentSteps();
+    const step = document.createElement('div');
+    const key = event.id || event.tool || `tool_${Date.now()}`;
+
+    step.className = 'agent-step running';
+    step.dataset.stepId = key;
+    step.innerHTML = `
+      <span class="agent-step-dot"></span>
+      <span class="agent-step-text">${escapeHtml(event.message || '正在调用工具...')}</span>
+    `;
+
+    panel.appendChild(step);
+    activeToolStepEls.set(key, step);
+
+    const container = document.getElementById('messages');
+    container.scrollTop = container.scrollHeight;
+  }
+
+  /** 标记工具步骤完成或失败 */
+  function completeAgentStep(event) {
+    const key = event.id || event.tool || 'unknown_tool';
+    let step = activeToolStepEls.get(key);
+
+    if (!step) {
+      appendAgentStep({
+        id: key,
+        tool: event.tool,
+        message: event.message || '工具调用完成',
+      });
+      step = activeToolStepEls.get(key);
+    }
+
+    step.classList.remove('running');
+    step.classList.add(event.status === 'error' ? 'error' : 'done');
+    step.querySelector('.agent-step-text').textContent = event.message || '工具调用完成';
+    if (event.preview) step.title = event.preview;
+
+    const container = document.getElementById('messages');
+    container.scrollTop = container.scrollHeight;
+  }
+
   /** 显示系统提示（居中小字） */
   function showSystemMsg(text) {
     const el = document.createElement('div');
@@ -935,22 +1203,55 @@
     container.scrollTop = container.scrollHeight;
   }
 
-  function addFileToList(icon, name, status) {
+  function addFileToList(icon, name, status, filename) {
     const list = document.getElementById('fileList');
-    // 清除"暂无文件"提示
     const empty = list.querySelector('.empty-hint');
     if (empty) empty.remove();
 
     const item = document.createElement('div');
     item.className = 'file-item';
+    item.dataset.filename = filename || name;
     item.innerHTML = `
+      <input type="checkbox" class="item-checkbox" onchange="updateBatchBtn('file')">
       <div class="file-icon">${icon}</div>
       <div class="file-info">
         <div class="file-name" title="${name}">${name}</div>
         <div class="file-status">${status}</div>
       </div>
+      <button class="delete-btn" title="删除文件" onclick="deleteFile('${filename || name}', this)">✕</button>
     `;
     list.appendChild(item);
+  }
+
+  /** 删除已上传的文件 */
+  async function deleteFile(filename, btnEl) {
+    if (!confirm('确定删除此文件？')) return;
+    try {
+      const res = await fetch('/files/' + encodeURIComponent(filename), { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        btnEl.closest('.file-item').remove();
+        checkFileListEmpty();
+      }
+    } catch (err) {
+      console.error('删除文件失败:', err);
+    }
+  }
+
+  function checkFileListEmpty() {
+    const list = document.getElementById('fileList');
+    if (!list.querySelector('.file-item')) {
+      list.innerHTML = '<div class="empty-hint">暂无文件</div>';
+      exitSelectMode('file');
+    }
+  }
+
+  function checkThreadListEmpty() {
+    const list = document.getElementById('threadList');
+    if (!list.querySelector('.thread-item')) {
+      list.innerHTML = '<div class="empty-hint">暂无历史会话</div>';
+      exitSelectMode('thread');
+    }
   }
 
   /** Enter 发送，Shift+Enter 换行 */
@@ -995,9 +1296,27 @@
         const item = document.createElement('div');
         item.className = 'thread-item' + (t.threadId === threadId ? ' active' : '');
         item.dataset.threadId = t.threadId;
-        item.textContent = t.preview || '新对话';
-        item.title = t.preview || '新对话';
-        item.onclick = () => switchThread(t.threadId);
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'item-checkbox';
+        cb.onchange = () => updateBatchBtn('thread');
+
+        const textSpan = document.createElement('span');
+        textSpan.className = 'thread-text';
+        textSpan.textContent = t.preview || '新对话';
+        textSpan.title = t.preview || '新对话';
+        textSpan.onclick = () => switchThread(t.threadId);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'delete-btn';
+        delBtn.title = '删除会话';
+        delBtn.textContent = '✕';
+        delBtn.onclick = (e) => { e.stopPropagation(); deleteThread(t.threadId, item); };
+
+        item.appendChild(cb);
+        item.appendChild(textSpan);
+        item.appendChild(delBtn);
         list.appendChild(item);
       }
     } catch (err) {
@@ -1064,6 +1383,22 @@
     }
   }
 
+  /** 删除指定会话 */
+  async function deleteThread(tid, itemEl) {
+    if (!confirm('确定删除此会话？')) return;
+    try {
+      const res = await fetch('/threads/' + encodeURIComponent(tid), { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        itemEl.remove();
+        checkThreadListEmpty();
+        if (tid === threadId) startNewChat();
+      }
+    } catch (err) {
+      console.error('删除会话失败:', err);
+    }
+  }
+
   /** 新建对话 */
   function startNewChat() {
     threadId = `thread_${Date.now()}`;
@@ -1102,19 +1437,116 @@
       for (const f of data.files) {
         const icon = f.type === 'image' ? '🖼️' : '📄';
         const status = f.type === 'image' ? '图片已上传' : '文档已上传';
-        addFileToList(icon, f.filename, status);
+        addFileToList(icon, f.filename, status, f.filename);
       }
     } catch (err) {
       console.error('加载文件列表失败:', err);
     }
   }
 
+  // ── 多选管理 ──
+
+  /** 切换管理模式（显示 checkbox + 批量操作栏） */
+  function toggleSelectMode(type) {
+    const listId = type === 'file' ? 'fileList' : 'threadList';
+    const barId = type === 'file' ? 'fileBatchBar' : 'threadBatchBar';
+    const list = document.getElementById(listId);
+    const bar = document.getElementById(barId);
+
+    const isActive = list.classList.contains('select-mode');
+    if (isActive) {
+      exitSelectMode(type);
+    } else {
+      list.classList.add('select-mode');
+      bar.classList.add('show');
+    }
+  }
+
+  /** 退出管理模式 */
+  function exitSelectMode(type) {
+    const listId = type === 'file' ? 'fileList' : 'threadList';
+    const barId = type === 'file' ? 'fileBatchBar' : 'threadBatchBar';
+    const list = document.getElementById(listId);
+    const bar = document.getElementById(barId);
+
+    list.classList.remove('select-mode');
+    bar.classList.remove('show');
+    // 取消所有勾选
+    list.querySelectorAll('.item-checkbox').forEach(cb => cb.checked = false);
+    bar.querySelector('input[type=checkbox]').checked = false;
+    updateBatchBtn(type);
+  }
+
+  /** 全选 / 取消全选 */
+  function toggleSelectAll(type, checked) {
+    const listId = type === 'file' ? 'fileList' : 'threadList';
+    document.getElementById(listId).querySelectorAll('.item-checkbox').forEach(cb => cb.checked = checked);
+    updateBatchBtn(type);
+  }
+
+  /** 更新批量删除按钮的禁用状态 */
+  function updateBatchBtn(type) {
+    const listId = type === 'file' ? 'fileList' : 'threadList';
+    const btnId = type === 'file' ? 'fileBatchBtn' : 'threadBatchBtn';
+    const count = document.getElementById(listId).querySelectorAll('.item-checkbox:checked').length;
+    const btn = document.getElementById(btnId);
+    btn.disabled = count === 0;
+    btn.textContent = count > 0 ? `删除选中 (${count})` : '删除选中';
+  }
+
+  /** 批量删除文件 */
+  async function batchDeleteFiles() {
+    const checked = document.querySelectorAll('#fileList .item-checkbox:checked');
+    const filenames = [...checked].map(cb => cb.closest('.file-item').dataset.filename);
+    if (filenames.length === 0) return;
+    if (!confirm(`确定删除 ${filenames.length} 个文件？`)) return;
+
+    try {
+      const res = await fetch('/files/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filenames }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        checked.forEach(cb => cb.closest('.file-item').remove());
+        checkFileListEmpty();
+      }
+    } catch (err) {
+      console.error('批量删除文件失败:', err);
+    }
+  }
+
+  /** 批量删除会话 */
+  async function batchDeleteThreads() {
+    const checked = document.querySelectorAll('#threadList .item-checkbox:checked');
+    const threadIds = [...checked].map(cb => cb.closest('.thread-item').dataset.threadId);
+    if (threadIds.length === 0) return;
+    if (!confirm(`确定删除 ${threadIds.length} 个会话？`)) return;
+
+    try {
+      const res = await fetch('/threads/batch-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threadIds }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const needNewChat = threadIds.includes(threadId);
+        checked.forEach(cb => cb.closest('.thread-item').remove());
+        checkThreadListEmpty();
+        if (needNewChat) startNewChat();
+      }
+    } catch (err) {
+      console.error('批量删除会话失败:', err);
+    }
+  }
+
   // ── 页面初始化 ──
 
-  // 页面加载时：加载文件列表 + 会话列表 + 恢复当前会话的历史消息
+  // 页面加载时：加载文件列表 + 会话列表，默认显示欢迎页（新对话）
   (async function init() {
     await Promise.all([loadFileList(), loadThreadList()]);
-    await loadThreadMessages(threadId);
   })();
 </script>
 

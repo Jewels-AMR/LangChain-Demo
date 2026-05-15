@@ -66,7 +66,9 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
     if (isDocument) {
       console.log(`[Server] 收到文档: ${file.originalname}`);
-      const chunkCount = await processDocument(file.path);
+      const chunkCount = await processDocument(file.path, {
+        originalName: file.originalname,
+      });
       res.json({
         success: true,
         type: 'document',
@@ -111,8 +113,17 @@ app.post('/chat', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    for await (const chunk of streamAgent(fullMessage, threadId)) {
-      res.write(`data: ${JSON.stringify({ chunk })}\n\n`);
+    // streamAgent 现在返回结构化事件：
+    // - text：模型最终回答文本
+    // - tool_start：Agent 决定调用工具
+    // - tool_result：工具执行完成或失败
+    for await (const event of streamAgent(fullMessage, threadId, {
+      hasImage: Boolean(imagePath),
+    })) {
+      const payload = typeof event === 'string'
+        ? { type: 'text', content: event }
+        : event;
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
     }
 
     // 发送结束标记
@@ -218,6 +229,53 @@ app.get('/threads/:id/messages', (req, res) => {
   } catch (err) {
     console.error('[Server] 获取消息失败:', err);
     res.json({ messages: [] });
+  }
+});
+
+// -------------------------------------------------------
+// 路由：POST /threads/batch-delete —— 批量删除会话
+// -------------------------------------------------------
+app.post('/threads/batch-delete', (req, res) => {
+  try {
+    const { threadIds } = req.body;
+    if (!Array.isArray(threadIds) || threadIds.length === 0) {
+      return res.status(400).json({ error: '没有选择要删除的会话' });
+    }
+    const db = new Database('./checkpoint.db');
+    const placeholders = threadIds.map(() => '?').join(',');
+    db.prepare(`DELETE FROM writes WHERE thread_id IN (${placeholders})`).run(...threadIds);
+    db.prepare(`DELETE FROM checkpoints WHERE thread_id IN (${placeholders})`).run(...threadIds);
+    db.close();
+    console.log(`[Server] 批量删除 ${threadIds.length} 个会话`);
+    res.json({ success: true, deleted: threadIds.length });
+  } catch (err) {
+    console.error('[Server] 批量删除会话失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------
+// 路由：POST /files/batch-delete —— 批量删除文件
+// -------------------------------------------------------
+app.post('/files/batch-delete', (req, res) => {
+  try {
+    const { filenames } = req.body;
+    if (!Array.isArray(filenames) || filenames.length === 0) {
+      return res.status(400).json({ error: '没有选择要删除的文件' });
+    }
+    let deleted = 0;
+    for (const filename of filenames) {
+      const filePath = path.join(__dirname, 'uploads', filename);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        deleted++;
+      }
+    }
+    console.log(`[Server] 批量删除 ${deleted} 个文件`);
+    res.json({ success: true, deleted });
+  } catch (err) {
+    console.error('[Server] 批量删除文件失败:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 

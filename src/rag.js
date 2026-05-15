@@ -80,35 +80,69 @@ function getLoader(filePath) {
  *  3. 向量化 + 存入向量库 → 为后续检索做准备
  *
  * @param {string} filePath - 上传文件在服务器上的路径
+ * @param {{ originalName?: string }} options - 上传时保留的文件信息
  * @returns {number} 最终存入向量库的块数量
  */
-export async function processDocument(filePath) {
+export async function processDocument(filePath, options = {}) {
   // --- 第一步：加载文件 ---
   const loader = getLoader(filePath);
   const docs = await loader.load();
   console.log(`[RAG] 文件加载完成，共 ${docs.length} 个文档段`);
+
+  const storedFilename = path.basename(filePath);
+  const filename = options.originalName || storedFilename;
+  const ext = path.extname(filePath).toLowerCase();
+  const sourcePath = `uploads/${storedFilename}`;
+
+  // metadata 是每个 chunk 的"身份证"：
+  // 后续检索命中时，可以知道内容来自哪个文件、哪一页、哪一个 chunk。
+  const docsWithMetadata = docs.map((doc, docIndex) => ({
+    ...doc,
+    metadata: {
+      ...doc.metadata,
+      filename,
+      storedFilename,
+      sourcePath,
+      fileType: ext.replace('.', ''),
+      docIndex,
+      page:
+        doc.metadata?.loc?.pageNumber ||
+        doc.metadata?.pageNumber ||
+        null,
+      uploadedAt: new Date().toISOString(),
+    },
+  }));
 
   // --- 第二步：切块 ---
   // chunkSize：每块最多包含多少字符
   // chunkOverlap：相邻两块之间重叠多少字符（避免语义在边界处被截断）
   const splitter = new RecursiveCharacterTextSplitter({
     chunkSize: 500,
-    chunkOverlap: 50,
+    chunkOverlap: 80,
+    separators: ['\n\n', '\n', '。', '！', '？', '；', '，', ' ', ''],
   });
-  const chunks = await splitter.splitDocuments(docs);
+  const chunks = await splitter.splitDocuments(docsWithMetadata);
+  const chunksWithMetadata = chunks.map((chunk, chunkId) => ({
+    ...chunk,
+    metadata: {
+      ...chunk.metadata,
+      chunkId,
+      sourceId: `${storedFilename}#${chunkId}`,
+    },
+  }));
   console.log(`[RAG] 切块完成，共 ${chunks.length} 个块`);
 
   // --- 第三步：向量化 + 存入向量库 ---
   // fromDocuments 内部会自动调用 embeddings.embedDocuments()
   // 把每个 chunk 的文本发给 Embedding 模型，拿回向量，存入内存
   if (!vectorStore) {
-    vectorStore = await MemoryVectorStore.fromDocuments(chunks, embeddings);
+    vectorStore = await MemoryVectorStore.fromDocuments(chunksWithMetadata, embeddings);
   } else {
-    await vectorStore.addDocuments(chunks);
+    await vectorStore.addDocuments(chunksWithMetadata);
   }
   console.log(`[RAG] 向量化完成，已存入向量库`);
 
-  return chunks.length;
+  return chunksWithMetadata.length;
 }
 
 /**
@@ -121,18 +155,47 @@ export async function processDocument(filePath) {
  *
  * @param {string} query - 用户的问题
  * @param {number} k - 返回几个最相关的块，默认 3
- * @returns {string} 拼接好的相关内容文本
+ * @returns {{ context: string, sources: Array<object> }} 相关内容和来源引用
  */
 export async function retrieveContext(query, k = 3) {
   if (!vectorStore) {
-    return '（当前没有上传任何文档，无法检索）';
+    return {
+      context: '（当前没有上传任何文档，无法检索）',
+      sources: [],
+    };
   }
 
   // similaritySearch 返回最相似的 k 个 Document 对象
   const results = await vectorStore.similaritySearch(query, k);
 
-  // 把多个块的内容拼接成一段文字，方便塞进 Prompt
-  return results.map((doc) => doc.pageContent).join('\n\n---\n\n');
+  const sources = results.map((doc, index) => ({
+    id: index + 1,
+    filename: doc.metadata.filename || '未知文件',
+    page: doc.metadata.page || null,
+    chunkId: doc.metadata.chunkId,
+    sourceId: doc.metadata.sourceId,
+    sourcePath: doc.metadata.sourcePath,
+    preview: doc.pageContent.slice(0, 120),
+  }));
+
+  // 把多个块的内容拼接成带来源编号的上下文，方便 Agent 在回答中引用。
+  const context = results
+    .map((doc, index) => {
+      const source = sources[index];
+      return [
+        `[来源 ${source.id}]`,
+        `文件：${source.filename}`,
+        source.page ? `页码：${source.page}` : null,
+        `chunkId：${source.chunkId}`,
+        '',
+        doc.pageContent,
+      ]
+        .filter(Boolean)
+        .join('\n');
+    })
+    .join('\n\n---\n\n');
+
+  return { context, sources };
 }
 
 /**

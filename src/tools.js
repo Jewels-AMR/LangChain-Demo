@@ -31,8 +31,17 @@ export const documentRetrievalTool = tool(
     if (!hasDocuments()) {
       return '用户还没有上传任何文档，请提示用户先上传文件。';
     }
-    const context = await retrieveContext(query);
-    return `以下是从文档中检索到的相关内容：\n\n${context}`;
+    const { context, sources } = await retrieveContext(query);
+    const sourceList = sources.length
+      ? sources
+          .map((source) => {
+            const pageText = source.page ? ` 第 ${source.page} 页` : '';
+            return `- [来源 ${source.id}] ${source.filename}${pageText}，chunk ${source.chunkId}`;
+          })
+          .join('\n')
+      : '- 未检索到可引用来源';
+
+    return `以下是从文档中检索到的相关内容：\n\n${context}\n\n请在回答末尾列出引用来源，格式如下：\n引用来源：\n${sourceList}`;
   },
   {
     name: 'document_retrieval',
@@ -137,6 +146,37 @@ export const imageAnalysisTool = tool(
 // tavily() 是工厂函数，传入 apiKey 返回客户端实例
 const tavilyClient = tavily({ apiKey: process.env.TAVILY_API_KEY });
 
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol);
+  } catch {
+    return false;
+  }
+}
+
+function formatSearchImages(images = []) {
+  const validImages = images
+    .map((image) => ({
+      url: typeof image === 'string' ? image : image?.url,
+      description: typeof image === 'string' ? '' : image?.description,
+    }))
+    .filter((image) => image.url && isHttpUrl(image.url))
+    .slice(0, 5);
+
+  if (validImages.length === 0) {
+    return '可用参考图片：无。请不要输出图片占位符、base64、二进制内容或无法访问的图片链接。';
+  }
+
+  // 只把干净的 http(s) URL 交给模型，避免模型把图片二进制/base64 当成正文输出。
+  return [
+    '可用参考图片（只能从下面的 URL 中选择，禁止输出 base64、二进制内容或乱码）：',
+    ...validImages.map((image, index) =>
+      `[图片 ${index + 1}] ${image.description || '参考图片'}\n图片URL：${image.url}\nMarkdown：![参考图片](${image.url})`
+    ),
+  ].join('\n');
+}
+
 export const webSearchTool = tool(
   async ({ query }) => {
     // 天气类查询自动补充今天日期，避免 Tavily 返回缓存的过期数据
@@ -147,9 +187,13 @@ export const webSearchTool = tool(
 
     console.log(`[Tool] 联网搜索: ${finalQuery}`);
 
-    // search() 发起搜索，返回若干条结果
-    // maxResults：最多返回几条，太多会占用过多 token
-    const results = await tavilyClient.search(finalQuery, { maxResults: 5 });
+    // search() 发起搜索，返回若干条结果。
+    // includeImages 会额外返回图片 URL，供 Agent 在菜谱报告里插入 Markdown 图片。
+    const results = await tavilyClient.search(finalQuery, {
+      maxResults: 5,
+      includeImages: true,
+      includeImageDescriptions: true,
+    });
 
     // 把搜索结果格式化成易于 LLM 阅读的文本
     // 每条结果包含：标题、URL、摘要
@@ -157,7 +201,9 @@ export const webSearchTool = tool(
       .map((r, i) => `[${i + 1}] ${r.title}\n来源：${r.url}\n摘要：${r.content}`)
       .join('\n\n');
 
-    return `以下是联网搜索"${query}"的结果：\n\n${formatted}`;
+    const imageReferences = formatSearchImages(results.images);
+
+    return `以下是联网搜索"${query}"的结果：\n\n${formatted}\n\n${imageReferences}`;
   },
   {
     name: 'web_search',
