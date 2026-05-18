@@ -106,9 +106,9 @@ function buildSystemPrompt({ hasImage, hasDocs }) {
   return `${CHEF_SYSTEM_PROMPT}\n\n${requestState}`;
 }
 
-function createChefAgent(options = {}) {
+async function createChefAgent(options = {}) {
   const hasImage = Boolean(options.hasImage);
-  const hasDocs = hasDocuments();
+  const hasDocs = await hasDocuments();
   const tools = selectTools({ hasImage, hasDocs });
 
   // 每次请求按上下文创建 Agent：
@@ -135,7 +135,7 @@ export async function invokeAgent(userMessage, threadId = 'default', options = {
   const config = {
     configurable: { thread_id: threadId },
   };
-  const { agent } = createChefAgent(options);
+  const { agent } = await createChefAgent(options);
 
   const response = await agent.invoke(
     {
@@ -159,7 +159,7 @@ export async function* streamAgent(userMessage, threadId = 'default', options = 
   const config = {
     configurable: { thread_id: threadId },
   };
-  const { agent, toolNames: activeToolNames } = createChefAgent(options);
+  const { agent, toolNames: activeToolNames } = await createChefAgent(options);
 
   const stream = await agent.stream(
     {
@@ -228,6 +228,7 @@ export async function* streamAgent(userMessage, threadId = 'default', options = 
 
       finishedTools.add(key);
       const toolName = toolCallNames.get(key) || message.name || 'unknown_tool';
+      if (!activeToolNames.has(toolName)) continue;
       const label = getToolLabel(toolName);
       const isError = message.status === 'error';
 
@@ -240,6 +241,20 @@ export async function* streamAgent(userMessage, threadId = 'default', options = 
         message: isError ? `${label}失败` : `${label}完成`,
         preview: summarizeToolContent(message.content || ''),
       };
+
+      // document_retrieval 会把命中的文档来源放在 ToolMessage.artifact。
+      // 这部分是检索系统的事实数据，单独发给前端渲染，避免让模型手写引用时出错。
+      if (
+        toolName === 'document_retrieval' &&
+        message.artifact?.type === 'document_sources' &&
+        Array.isArray(message.artifact.sources) &&
+        message.artifact.sources.length > 0
+      ) {
+        yield {
+          type: 'sources',
+          sources: message.artifact.sources,
+        };
+      }
     }
   }
 }

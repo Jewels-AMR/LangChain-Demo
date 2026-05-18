@@ -28,26 +28,32 @@ import { retrieveContext, hasDocuments } from './rag.js';
 // -------------------------------------------------------
 export const documentRetrievalTool = tool(
   async ({ query }) => {
-    if (!hasDocuments()) {
-      return '用户还没有上传任何文档，请提示用户先上传文件。';
+    if (!(await hasDocuments())) {
+      return [
+        '用户还没有上传任何文档，请提示用户先上传文件。',
+        {
+          type: 'document_sources',
+          sources: [],
+        },
+      ];
     }
     const { context, sources } = await retrieveContext(query);
-    const sourceList = sources.length
-      ? sources
-          .map((source) => {
-            const pageText = source.page ? ` 第 ${source.page} 页` : '';
-            return `- [来源 ${source.id}] ${source.filename}${pageText}，chunk ${source.chunkId}`;
-          })
-          .join('\n')
-      : '- 未检索到可引用来源';
 
-    return `以下是从文档中检索到的相关内容：\n\n${context}\n\n请在回答末尾列出引用来源，格式如下：\n引用来源：\n${sourceList}`;
+    // content 给模型阅读，用来生成回答；artifact 给后端/前端使用，不交给模型自由改写。
+    return [
+      `以下是从文档中检索到的相关内容：\n\n${context}\n\n请基于上述文档内容回答。引用来源由系统单独展示，你不要在回答末尾重复手写来源列表。`,
+      {
+        type: 'document_sources',
+        sources,
+      },
+    ];
   },
   {
     name: 'document_retrieval',
     description:
       '当用户的问题涉及他上传的文件内容时使用此工具。' +
       '输入用户的问题，工具会从上传的文档中检索最相关的段落并返回。',
+    responseFormat: 'content_and_artifact',
     schema: z.object({
       query: z.string().describe('用户的问题或搜索关键词'),
     }),

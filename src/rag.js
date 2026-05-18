@@ -11,40 +11,27 @@
 // ============================================================
 
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
-import { MemoryVectorStore } from '@langchain/classic/vectorstores/memory';
-import { OpenAIEmbeddings } from '@langchain/openai';
 import { PDFLoader } from '@langchain/community/document_loaders/fs/pdf';
 import { TextLoader } from '@langchain/classic/document_loaders/fs/text';
 import path from 'path';
+import {
+  addDocumentsToVectorStore,
+  deleteDocumentIndexesNotInStoredFilenames,
+  deleteDocumentsFromVectorStoreByStoredFilename,
+  hasIndexedDocuments,
+  searchSimilarDocuments,
+} from './vectorStore.js';
 
 // -------------------------------------------------------
-// Embedding 模型初始化
+// 向量库说明
 //
-// Embedding 模型负责把文字转成向量（一串数字）。
-// DeepSeek 没有 Embedding 模型，这里使用阿里云 Dashscope 的
-// text-embedding-v3，通过兼容 OpenAI 的接口调用。
+// 具体向量库实现已经下沉到 vectorStore.js。
+// rag.js 只负责 RAG 文档处理流程：
+//   加载 → 切块 → 补 metadata → 调用向量库适配层
 //
-// 向量维度：text-embedding-v3 输出 1024 维向量
-// 计费：按 token 计费，通常很便宜
+// 这样后续把 pgvector 换成 Qdrant/Redis 时，
+// 不需要改这里的文档解析和切块逻辑。
 // -------------------------------------------------------
-const embeddings = new OpenAIEmbeddings({
-  apiKey: process.env.EMBEDDING_API_KEY,
-  model: process.env.EMBEDDING_MODEL || 'text-embedding-v3',
-  configuration: {
-    baseURL: process.env.EMBEDDING_BASE_URL,
-  },
-});
-
-// -------------------------------------------------------
-// 向量库（内存版）
-//
-// MemoryVectorStore：把向量存在内存里，重启后消失。
-// 优点：零配置，适合开发阶段。
-// 缺点：不持久化。
-//
-// TODO：后续替换为 Chroma 等持久化向量库
-// -------------------------------------------------------
-let vectorStore = null;
 
 /**
  * 根据文件扩展名选择对应的文档加载器
@@ -133,16 +120,35 @@ export async function processDocument(filePath, options = {}) {
   console.log(`[RAG] 切块完成，共 ${chunks.length} 个块`);
 
   // --- 第三步：向量化 + 存入向量库 ---
-  // fromDocuments 内部会自动调用 embeddings.embedDocuments()
-  // 把每个 chunk 的文本发给 Embedding 模型，拿回向量，存入内存
-  if (!vectorStore) {
-    vectorStore = await MemoryVectorStore.fromDocuments(chunksWithMetadata, embeddings);
-  } else {
-    await vectorStore.addDocuments(chunksWithMetadata);
-  }
+  // 具体向量库细节由 vectorStore.js 处理。
+  // 当前内部使用 pgvector，文档向量会持久化到 PostgreSQL。
+  await addDocumentsToVectorStore(chunksWithMetadata);
   console.log(`[RAG] 向量化完成，已存入向量库`);
 
   return chunksWithMetadata.length;
+}
+
+/**
+ * 删除某个上传文档对应的向量索引
+ *
+ * 文件删除和向量索引删除必须绑定：
+ * 只删 uploads/ 文件会导致 RAG 仍然能从 pgvector 检索到旧内容。
+ *
+ * @param {string} storedFilename - 服务器保存的文件名
+ * @returns {Promise<number>} 删除的 chunk 数量
+ */
+export async function deleteDocumentIndex(storedFilename) {
+  return deleteDocumentsFromVectorStoreByStoredFilename(storedFilename);
+}
+
+/**
+ * 清理 uploads/ 里已经不存在的文档对应的向量索引
+ *
+ * @param {string[]} validStoredFilenames - 当前仍存在的上传文档文件名
+ * @returns {Promise<number>} 删除的孤儿 chunk 数量
+ */
+export async function cleanupMissingDocumentIndexes(validStoredFilenames) {
+  return deleteDocumentIndexesNotInStoredFilenames(validStoredFilenames);
 }
 
 /**
@@ -158,7 +164,7 @@ export async function processDocument(filePath, options = {}) {
  * @returns {{ context: string, sources: Array<object> }} 相关内容和来源引用
  */
 export async function retrieveContext(query, k = 3) {
-  if (!vectorStore) {
+  if (!(await hasIndexedDocuments())) {
     return {
       context: '（当前没有上传任何文档，无法检索）',
       sources: [],
@@ -166,7 +172,7 @@ export async function retrieveContext(query, k = 3) {
   }
 
   // similaritySearch 返回最相似的 k 个 Document 对象
-  const results = await vectorStore.similaritySearch(query, k);
+  const results = await searchSimilarDocuments(query, k);
 
   const sources = results.map((doc, index) => ({
     id: index + 1,
@@ -203,8 +209,8 @@ export async function retrieveContext(query, k = 3) {
  *
  * Agent 可以用这个方法决定要不要调用 RAG 工具
  *
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
-export function hasDocuments() {
-  return vectorStore !== null;
+export async function hasDocuments() {
+  return hasIndexedDocuments();
 }

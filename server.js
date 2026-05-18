@@ -22,11 +22,17 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { invokeAgent, streamAgent } from './src/agent.js';
-import { processDocument } from './src/rag.js';
+import {
+  cleanupMissingDocumentIndexes,
+  deleteDocumentIndex,
+  processDocument,
+} from './src/rag.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+const DOCUMENT_EXTS = new Set(['.pdf', '.txt']);
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -45,12 +51,31 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-  const allowed = ['.pdf', '.txt', '.jpg', '.jpeg', '.png', '.webp'];
   const ext = path.extname(file.originalname).toLowerCase();
-  allowed.includes(ext) ? cb(null, true) : cb(new Error(`不支持的格式：${ext}`), false);
+  DOCUMENT_EXTS.has(ext) || IMAGE_EXTS.has(ext)
+    ? cb(null, true)
+    : cb(new Error(`不支持的格式：${ext}`), false);
 };
 
 const upload = multer({ storage, fileFilter });
+
+function isDocumentFilename(filename) {
+  return DOCUMENT_EXTS.has(path.extname(filename).toLowerCase());
+}
+
+function isImageFilename(filename) {
+  return IMAGE_EXTS.has(path.extname(filename).toLowerCase());
+}
+
+function getSafeUploadFilename(filename) {
+  const safeFilename = path.basename(filename || '');
+
+  if (!safeFilename || safeFilename !== filename) {
+    throw new Error('非法文件名');
+  }
+
+  return safeFilename;
+}
 
 // -------------------------------------------------------
 // 路由：POST /upload —— 处理文件上传
@@ -61,8 +86,9 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     if (!file) return res.status(400).json({ error: '没有收到文件' });
 
     const ext = path.extname(file.originalname).toLowerCase();
-    const isImage = ['.jpg', '.jpeg', '.png', '.webp'].includes(ext);
-    const isDocument = ['.pdf', '.txt'].includes(ext);
+    const isImage = IMAGE_EXTS.has(ext);
+    const isDocument = DOCUMENT_EXTS.has(ext);
+    const storedFilename = path.basename(file.path);
 
     if (isDocument) {
       console.log(`[Server] 收到文档: ${file.originalname}`);
@@ -74,6 +100,8 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         type: 'document',
         message: `文档上传成功，已切分为 ${chunkCount} 个块并建立索引`,
         filePath: file.path,
+        filename: storedFilename,
+        originalName: file.originalname,
       });
     } else if (isImage) {
       console.log(`[Server] 收到图片: ${file.originalname}`);
@@ -82,6 +110,8 @@ app.post('/upload', upload.single('file'), async (req, res) => {
         type: 'image',
         message: '图片上传成功，发送消息时我会自动分析食材',
         filePath: file.path,
+        filename: storedFilename,
+        originalName: file.originalname,
       });
     }
   } catch (err) {
@@ -257,24 +287,65 @@ app.post('/threads/batch-delete', (req, res) => {
 // -------------------------------------------------------
 // 路由：POST /files/batch-delete —— 批量删除文件
 // -------------------------------------------------------
-app.post('/files/batch-delete', (req, res) => {
+app.post('/files/batch-delete', async (req, res) => {
   try {
     const { filenames } = req.body;
     if (!Array.isArray(filenames) || filenames.length === 0) {
       return res.status(400).json({ error: '没有选择要删除的文件' });
     }
+
     let deleted = 0;
+    let deletedChunks = 0;
+
     for (const filename of filenames) {
-      const filePath = path.join(__dirname, 'uploads', filename);
+      const safeFilename = getSafeUploadFilename(filename);
+      const filePath = path.join(__dirname, 'uploads', safeFilename);
+
+      // 文档文件删除时，同步删除 pgvector 中对应的 chunk 向量。
+      // 图片没有入向量库，所以不需要删索引。
+      if (isDocumentFilename(safeFilename)) {
+        deletedChunks += await deleteDocumentIndex(safeFilename);
+      }
+
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
         deleted++;
       }
     }
-    console.log(`[Server] 批量删除 ${deleted} 个文件`);
-    res.json({ success: true, deleted });
+
+    console.log(`[Server] 批量删除 ${deleted} 个文件，清理 ${deletedChunks} 条文档向量`);
+    res.json({ success: true, deleted, deletedChunks });
   } catch (err) {
     console.error('[Server] 批量删除文件失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------
+// 路由：DELETE /files/:filename —— 删除单个上传文件
+// -------------------------------------------------------
+app.delete('/files/:filename', async (req, res) => {
+  try {
+    const filename = getSafeUploadFilename(req.params.filename);
+    const filePath = path.join(__dirname, 'uploads', filename);
+    let deleted = 0;
+    let deletedChunks = 0;
+
+    // 先删向量索引，再删物理文件。
+    // 即使物理文件已经不存在，也要尽量清理 pgvector 里的旧索引。
+    if (isDocumentFilename(filename)) {
+      deletedChunks = await deleteDocumentIndex(filename);
+    }
+
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      deleted = 1;
+    }
+
+    console.log(`[Server] 删除文件 ${filename}，文件删除=${deleted}，向量删除=${deletedChunks}`);
+    res.json({ success: true, deleted, deletedChunks });
+  } catch (err) {
+    console.error('[Server] 删除文件失败:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -286,12 +357,10 @@ app.get('/files', (req, res) => {
   try {
     const uploadsDir = path.join(__dirname, 'uploads');
     const files = fs.readdirSync(uploadsDir).map((filename) => {
-      const ext = path.extname(filename).toLowerCase();
-      const isImage = ['.jpg', '.jpeg', '.png', '.webp'].includes(ext);
       const stat = fs.statSync(path.join(uploadsDir, filename));
       return {
         filename,
-        type: isImage ? 'image' : 'document',
+        type: isImageFilename(filename) ? 'image' : 'document',
         path: `uploads/${filename}`,
         time: stat.mtimeMs,
       };
@@ -305,39 +374,31 @@ app.get('/files', (req, res) => {
 });
 
 // -------------------------------------------------------
-// 启动时自动重建向量索引
+// 启动服务
 //
-// MemoryVectorStore 是内存存储，重启后向量丢失。
-// 扫描 uploads/ 里已有的文档文件，自动重新向量化，
-// 这样重启后不用重新上传文档。
+// 现在向量库已经换成 pgvector，索引会持久化在 PostgreSQL 中。
+// 因此启动时不能再扫描 uploads/ 重建索引，否则每次重启都会重复写入 chunk。
+// 这里只做“孤儿索引清理”：uploads/ 里不存在的文档，其 pgvector 索引也应该删除。
 // -------------------------------------------------------
-async function rebuildIndex() {
-  const uploadsDir = path.join(__dirname, 'uploads');
-  if (!fs.existsSync(uploadsDir)) return;
+async function cleanupOrphanIndexes() {
+  try {
+    const uploadsDir = path.join(__dirname, 'uploads');
+    const validDocumentFilenames = fs.existsSync(uploadsDir)
+      ? fs.readdirSync(uploadsDir).filter(isDocumentFilename)
+      : [];
 
-  const docExts = ['.pdf', '.txt'];
-  const docFiles = fs.readdirSync(uploadsDir).filter((f) =>
-    docExts.includes(path.extname(f).toLowerCase())
-  );
-
-  if (docFiles.length === 0) return;
-
-  console.log(`[启动] 发现 ${docFiles.length} 个文档，正在重建向量索引...`);
-
-  for (const filename of docFiles) {
-    try {
-      const filePath = path.join(uploadsDir, filename);
-      const chunkCount = await processDocument(filePath);
-      console.log(`[启动] ${filename} → ${chunkCount} 个块`);
-    } catch (err) {
-      console.error(`[启动] ${filename} 索引失败:`, err.message);
+    const deletedChunks = await cleanupMissingDocumentIndexes(validDocumentFilenames);
+    if (deletedChunks > 0) {
+      console.log(`[启动] 已清理 ${deletedChunks} 条孤儿文档向量索引`);
     }
+  } catch (err) {
+    // 数据库没有启动时，不阻塞普通聊天和前端页面启动。
+    // 用户上传文档或检索文档时，接口会再返回明确错误。
+    console.warn(`[启动] 孤儿索引清理跳过: ${err.message}`);
   }
-
-  console.log(`[启动] 向量索引重建完成`);
 }
 
-rebuildIndex().then(() => {
+cleanupOrphanIndexes().finally(() => {
   app.listen(PORT, () => {
     console.log(`\n🚀 私厨问答管家已启动`);
     console.log(`📡 访问地址：http://localhost:${PORT}`);
