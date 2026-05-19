@@ -20,6 +20,36 @@ import sharp from 'sharp';
 import { retrieveContext, hasDocuments } from './rag.js';
 import { findIndexedDocumentByIdentifier } from './documentStore.js';
 
+function createDocumentSourcesArtifact({
+  query,
+  scopeType = 'all',
+  documentIds = [],
+  documentNames = [],
+  sources = [],
+  minSimilarityScore = null,
+  candidateCount = 0,
+  hitCount = sources.length,
+  requestedK = 0,
+  reason = null,
+} = {}) {
+  // artifact 是后端给前端看的结构化数据，不依赖模型自己总结。
+  return {
+    type: 'document_sources',
+    query,
+    scope: {
+      type: scopeType,
+      documentIds,
+      names: documentNames,
+    },
+    sources,
+    minSimilarityScore,
+    candidateCount,
+    hitCount,
+    requestedK,
+    reason,
+  };
+}
+
 // -------------------------------------------------------
 // 工具一：文档检索工具（RAG）
 //
@@ -40,10 +70,12 @@ export function createDocumentRetrievalTool(options = {}) {
       if (!(await hasDocuments())) {
         return [
           '用户还没有上传任何文档，请提示用户先上传文件。',
-          {
-            type: 'document_sources',
+          createDocumentSourcesArtifact({
+            query,
+            scopeType: 'none',
             sources: [],
-          },
+            reason: 'no_documents',
+          }),
         ];
       }
 
@@ -57,10 +89,14 @@ export function createDocumentRetrievalTool(options = {}) {
       if ((documentId || filename) && !targetDocument) {
         return [
           `没有找到可检索的指定文档：${documentId || filename}。请改为检索全部已上传文档，或提示用户确认文件名。`,
-          {
-            type: 'document_sources',
+          createDocumentSourcesArtifact({
+            query,
+            scopeType: forcedDocumentIds.length > 0 ? 'selected' : 'all',
+            documentIds: forcedDocumentIds,
+            documentNames: scopedDocuments.map((doc) => doc.originalName),
             sources: [],
-          },
+            reason: 'target_not_found',
+          }),
         ];
       }
 
@@ -72,22 +108,31 @@ export function createDocumentRetrievalTool(options = {}) {
         const scopeNames = scopedDocuments.map((doc) => doc.originalName).join('、');
         return [
           `当前会话已限定检索范围：${scopeNames || '选中文档'}。指定文档不在当前范围内，不能检索。`,
-          {
-            type: 'document_sources',
+          createDocumentSourcesArtifact({
+            query,
+            scopeType: 'selected',
+            documentIds: forcedDocumentIds,
+            documentNames: scopedDocuments.map((doc) => doc.originalName),
             sources: [],
-          },
+            reason: 'outside_scope',
+          }),
         ];
       }
 
       const documentIds = forcedDocumentIds.length > 0
         ? (targetDocument ? [targetDocument.id] : forcedDocumentIds)
         : (targetDocument ? [targetDocument.id] : []);
+      const documentNames = targetDocument
+        ? [targetDocument.originalName]
+        : scopedDocuments.map((doc) => doc.originalName);
 
       const {
         context,
         sources,
         minSimilarityScore,
         candidateCount,
+        hitCount,
+        requestedK,
       } = await retrieveContext(query, 3, {
         documentIds,
       });
@@ -98,16 +143,23 @@ export function createDocumentRetrievalTool(options = {}) {
               : scopedDocuments.map((doc) => doc.originalName).join('、')
           }\n\n`
         : '';
+      const reason = sources.length > 0 ? null : 'no_relevant_chunks';
 
       // content 给模型阅读，用来生成回答；artifact 给后端/前端使用，不交给模型自由改写。
       return [
-        `${scopeText}检索候选数：${candidateCount}，最低相关度阈值：${minSimilarityScore.toFixed(2)}。\n\n以下是从文档中检索到的相关内容：\n\n${context}\n\n请基于上述文档内容回答。引用来源由系统单独展示，你不要在回答末尾重复手写来源列表。如果没有检索到高相关片段，请直接说明文档中没有找到足够相关的信息。`,
-        {
-          type: 'document_sources',
+        `${scopeText}检索候选数：${candidateCount}，命中数：${hitCount}，最低相关度阈值：${minSimilarityScore.toFixed(2)}。\n\n以下是从文档中检索到的相关内容：\n\n${context}\n\n请基于上述文档内容回答。引用来源由系统单独展示，你不要在回答末尾重复手写来源列表。如果没有检索到高相关片段，请直接说明文档中没有找到足够相关的信息。`,
+        createDocumentSourcesArtifact({
+          query,
+          scopeType: documentIds.length > 0 ? 'selected' : 'all',
+          documentIds,
+          documentNames,
           sources,
           minSimilarityScore,
           candidateCount,
-        },
+          hitCount,
+          requestedK,
+          reason,
+        }),
       ];
     },
     {

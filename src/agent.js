@@ -84,6 +84,34 @@ function summarizeToolContent(content) {
   return text.replace(/\s+/g, ' ').slice(0, 120);
 }
 
+function createRagDebugEvent(toolCallId, artifact) {
+  const sources = Array.isArray(artifact.sources) ? artifact.sources : [];
+  const scope = artifact.scope && typeof artifact.scope === 'object'
+    ? artifact.scope
+    : { type: 'all', documentIds: [], names: [] };
+
+  // 这条事件给前端展示“检索发生了什么”，不是给模型继续推理。
+  return {
+    type: 'rag_debug',
+    id: toolCallId,
+    query: artifact.query || '',
+    scope: {
+      type: scope.type || 'all',
+      documentIds: Array.isArray(scope.documentIds) ? scope.documentIds : [],
+      names: Array.isArray(scope.names) ? scope.names : [],
+    },
+    candidateCount: Number(artifact.candidateCount || 0),
+    hitCount: Number(artifact.hitCount ?? sources.length),
+    requestedK: Number(artifact.requestedK || 0),
+    minSimilarityScore:
+      typeof artifact.minSimilarityScore === 'number'
+        ? artifact.minSimilarityScore
+        : null,
+    reason: artifact.reason || null,
+    sources,
+  };
+}
+
 function selectTools({ hasImage, hasDocs, forcedDocumentIds = [], scopedDocuments = [] }) {
   const tools = [];
 
@@ -313,14 +341,19 @@ export async function* streamAgent(userMessage, threadId = 'default', options = 
       // 这部分是检索系统的事实数据，单独发给前端渲染，避免让模型手写引用时出错。
       if (
         toolName === 'document_retrieval' &&
-        message.artifact?.type === 'document_sources' &&
-        Array.isArray(message.artifact.sources) &&
-        message.artifact.sources.length > 0
+        message.artifact?.type === 'document_sources'
       ) {
-        yield {
-          type: 'sources',
-          sources: message.artifact.sources,
-        };
+        yield createRagDebugEvent(key, message.artifact);
+
+        if (
+          Array.isArray(message.artifact.sources) &&
+          message.artifact.sources.length > 0
+        ) {
+          yield {
+            type: 'sources',
+            sources: message.artifact.sources,
+          };
+        }
       }
     }
   }

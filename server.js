@@ -20,6 +20,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { invokeAgent, streamAgent } from './src/agent.js';
 import {
@@ -41,12 +42,25 @@ import {
   markDocumentIndexed,
   upsertDocumentRecordForExistingFile,
 } from './src/documentStore.js';
+import {
+  deleteAgentTracesByThread,
+  deleteAgentTracesByThreads,
+  ensureTraceTable,
+  listAgentTurnTraces,
+  saveAgentTurnTrace,
+} from './src/traceStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 const DOCUMENT_EXTS = new Set(['.pdf', '.txt']);
+const TRACE_EVENT_TYPES = new Set([
+  'tool_start',
+  'tool_result',
+  'rag_debug',
+  'sources',
+]);
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -89,6 +103,21 @@ function getSafeUploadFilename(filename) {
   }
 
   return safeFilename;
+}
+
+function shouldPersistTraceEvent(event) {
+  return event && typeof event === 'object' && TRACE_EVENT_TYPES.has(event.type);
+}
+
+function persistTurnTrace(turnTrace) {
+  if (!turnTrace) return;
+
+  try {
+    saveAgentTurnTrace(turnTrace);
+  } catch (error) {
+    // trace 只是前端调试回放，不应该影响正常聊天响应。
+    console.warn(`[Trace] 保存 Agent 轨迹失败: ${error.message}`);
+  }
 }
 
 // -------------------------------------------------------
@@ -163,6 +192,8 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 // 服务端只把图片路径附在消息里，让 Agent 知道有图片可以分析。
 // -------------------------------------------------------
 app.post('/chat', async (req, res) => {
+  let turnTrace = null;
+
   try {
     const {
       message,
@@ -177,6 +208,16 @@ app.post('/chat', async (req, res) => {
       : [];
 
     console.log(`[Server] 收到消息 (thread: ${threadId}): ${message}`);
+
+    turnTrace = {
+      threadId,
+      turnId: randomUUID(),
+      userMessage: message,
+      assistantMessage: '',
+      imagePath: imagePath || null,
+      selectedDocumentIds: documentScopeIds,
+      events: [],
+    };
 
     const fullMessage = imagePath
       ? `${message}\n\n[用户上传了图片，服务器路径：${imagePath}，请调用 image_analysis 工具分析这张图片中的食材]`
@@ -198,14 +239,34 @@ app.post('/chat', async (req, res) => {
       const payload = typeof event === 'string'
         ? { type: 'text', content: event }
         : event;
+
+      if (payload.type === 'text' && typeof payload.content === 'string') {
+        turnTrace.assistantMessage += payload.content;
+      }
+
+      if (shouldPersistTraceEvent(payload)) {
+        turnTrace.events.push(payload);
+      }
+
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
     }
+
+    persistTurnTrace(turnTrace);
 
     // 发送结束标记
     res.write(`data: [DONE]\n\n`);
     res.end();
   } catch (err) {
     console.error('[Server] 处理失败:', err);
+    if (turnTrace) {
+      turnTrace.events.push({
+        type: 'error',
+        message: err.message,
+        at: new Date().toISOString(),
+      });
+      persistTurnTrace(turnTrace);
+    }
+
     // 如果还没开始写 SSE 头，返回 JSON 错误
     if (!res.headersSent) {
       res.status(500).json({ error: err.message });
@@ -275,7 +336,22 @@ app.get('/threads/:id/messages', (req, res) => {
     `).all(req.params.id);
     db.close();
 
+    const pendingTraces = listAgentTurnTraces(req.params.id);
+    let pendingAssistantTrace = null;
     const messages = [];
+
+    function takeTraceByUserMessage(userMessage) {
+      const index = pendingTraces.findIndex((trace) => trace.userMessage === userMessage);
+      if (index < 0) return null;
+      return pendingTraces.splice(index, 1)[0];
+    }
+
+    function takeTraceByAssistantMessage(assistantMessage) {
+      const index = pendingTraces.findIndex((trace) => trace.assistantMessage === assistantMessage);
+      if (index < 0) return null;
+      return pendingTraces.splice(index, 1)[0];
+    }
+
     for (const row of rows) {
       try {
         const parsed = JSON.parse(row.value);
@@ -289,13 +365,20 @@ app.get('/threads/:id/messages', (req, res) => {
           // 提取图片路径（如果有）
           const imgMatch = content.match(/服务器路径：(uploads\/[^\s,，\]]+)/);
           const cleanContent = content.replace(/\n\n\[用户上传了图片[\s\S]*?\]/, '').trim();
+          pendingAssistantTrace = takeTraceByUserMessage(cleanContent);
           messages.push({
             role: 'user',
             content: cleanContent,
             imagePath: imgMatch ? imgMatch[1] : null,
           });
         } else if (type === 'AIMessage') {
-          messages.push({ role: 'assistant', content });
+          const trace = pendingAssistantTrace || takeTraceByAssistantMessage(content);
+          pendingAssistantTrace = null;
+          messages.push({
+            role: 'assistant',
+            content,
+            trace,
+          });
         }
       } catch {}
     }
@@ -321,10 +404,37 @@ app.post('/threads/batch-delete', (req, res) => {
     db.prepare(`DELETE FROM writes WHERE thread_id IN (${placeholders})`).run(...threadIds);
     db.prepare(`DELETE FROM checkpoints WHERE thread_id IN (${placeholders})`).run(...threadIds);
     db.close();
-    console.log(`[Server] 批量删除 ${threadIds.length} 个会话`);
+    const deletedTraces = deleteAgentTracesByThreads(threadIds);
+    console.log(`[Server] 批量删除 ${threadIds.length} 个会话，清理 ${deletedTraces} 条 Agent 轨迹`);
     res.json({ success: true, deleted: threadIds.length });
   } catch (err) {
     console.error('[Server] 批量删除会话失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------
+// 路由：DELETE /threads/:id —— 删除单个会话
+// -------------------------------------------------------
+app.delete('/threads/:id', (req, res) => {
+  try {
+    const threadId = req.params.id;
+    const db = new Database('./checkpoint.db');
+    const deletedWrites = db.prepare('DELETE FROM writes WHERE thread_id = ?').run(threadId);
+    const deletedCheckpoints = db.prepare('DELETE FROM checkpoints WHERE thread_id = ?').run(threadId);
+    db.close();
+
+    const deletedTraces = deleteAgentTracesByThread(threadId);
+    console.log(
+      `[Server] 删除会话 ${threadId}，writes=${deletedWrites.changes}，checkpoints=${deletedCheckpoints.changes}，traces=${deletedTraces}`
+    );
+    res.json({
+      success: true,
+      deleted: deletedWrites.changes + deletedCheckpoints.changes,
+      deletedTraces,
+    });
+  } catch (err) {
+    console.error('[Server] 删除会话失败:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -467,6 +577,7 @@ app.get('/files', async (req, res) => {
 // -------------------------------------------------------
 async function syncDocumentRegistry() {
   try {
+    ensureTraceTable();
     await ensureDocumentTable();
 
     const uploadsDir = path.join(__dirname, 'uploads');

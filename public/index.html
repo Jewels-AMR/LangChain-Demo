@@ -566,6 +566,61 @@
       overflow-wrap: anywhere;
     }
 
+    .rag-debug {
+      width: 100%;
+      margin-top: 8px;
+      border: 1px solid #e8e8e8;
+      background: #fff;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: #555;
+    }
+
+    .rag-debug summary {
+      cursor: pointer;
+      color: #555;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    .rag-debug-body {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px 10px;
+      margin-top: 8px;
+    }
+
+    .rag-debug-item {
+      min-width: 0;
+      line-height: 1.45;
+    }
+
+    .rag-debug-label {
+      color: #999;
+      margin-right: 4px;
+    }
+
+    .rag-debug-value {
+      color: #333;
+      overflow-wrap: anywhere;
+    }
+
+    .rag-debug-note {
+      grid-column: 1 / -1;
+      color: #9a6700;
+      background: #fff8e1;
+      border-radius: 6px;
+      padding: 6px 8px;
+      line-height: 1.5;
+    }
+
+    .rag-debug-block + .rag-debug-block {
+      border-top: 1px solid #f0f0f0;
+      margin-top: 8px;
+      padding-top: 8px;
+    }
+
     /* 图片附件预览（消息中） */
     .message-image {
       max-width: 200px;
@@ -1073,6 +1128,7 @@
         let bubble = null;
         let fullText = '';
         let pendingSources = [];
+        let pendingRagDebugEvents = [];
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -1111,6 +1167,14 @@
                 continue;
               }
 
+              // RAG 调试事件：后端把本次检索的范围、阈值、候选数、命中数发回来。
+              // 这属于系统事实数据，用来学习和排查 agent loop，不让模型自由编。
+              if (parsed.type === 'rag_debug') {
+                pendingRagDebugEvents.push(parsed);
+                updateAgentStepWithRagDebug(parsed);
+                continue;
+              }
+
               // RAG 来源事件：后端把检索命中的 sources 作为 JSON 单独发给前端。
               // 这比让模型手写“引用来源”更稳定，文件名、页码、chunkId 不会被模型改错。
               if (parsed.type === 'sources') {
@@ -1142,6 +1206,11 @@
         if (pendingSources.length > 0) {
           if (!bubble) bubble = createStreamingBubble();
           appendSourceList(bubble, pendingSources);
+        }
+
+        if (pendingRagDebugEvents.length > 0) {
+          if (!bubble) bubble = createStreamingBubble();
+          appendRagDebug(bubble, pendingRagDebugEvents);
         }
       }
     } catch (err) {
@@ -1182,7 +1251,7 @@
   }
 
   /** 渲染 AI 消息（左侧气泡，支持 Markdown） */
-  function appendAssistantMessage(text) {
+  function appendAssistantMessage(text, trace = null) {
     const row = document.createElement('div');
     row.className = 'message-row';
 
@@ -1197,6 +1266,7 @@
     `;
 
     appendToMessages(row);
+    renderTraceForBubble(row.querySelector('.bubble.assistant'), trace);
   }
 
   /** 创建一个空的 AI 气泡，用于流式写入内容 */
@@ -1215,6 +1285,19 @@
     appendToMessages(row);
 
     return bubble;
+  }
+
+  /** 历史消息回放时，把持久化的 sources / rag_debug 重新挂回 AI 气泡 */
+  function renderTraceForBubble(bubble, trace) {
+    if (!bubble || !trace) return;
+
+    const sources = Array.isArray(trace.sources) ? trace.sources : [];
+    const ragDebugEvents = Array.isArray(trace.ragDebugEvents)
+      ? trace.ragDebugEvents
+      : [];
+
+    if (sources.length > 0) appendSourceList(bubble, sources);
+    if (ragDebugEvents.length > 0) appendRagDebug(bubble, ragDebugEvents);
   }
 
   /** 在 AI 回复气泡下方渲染结构化引用来源 */
@@ -1258,6 +1341,108 @@
 
     const container = document.getElementById('messages');
     container.scrollTop = container.scrollHeight;
+  }
+
+  /** 在 AI 回复下方渲染 RAG 检索过程，方便学习 agent loop 数据流 */
+  function appendRagDebug(bubble, debugEvents) {
+    const content = bubble.closest('.message-content');
+    const events = Array.isArray(debugEvents)
+      ? debugEvents.filter(Boolean)
+      : [debugEvents].filter(Boolean);
+    if (!content || events.length === 0) return;
+
+    const oldDebug = content.querySelector('.rag-debug');
+    if (oldDebug) oldDebug.remove();
+
+    const lastEvent = events.at(-1);
+    const candidateCount = Number(lastEvent.candidateCount || 0);
+    const hitCount = Number(lastEvent.hitCount || 0);
+    const thresholdText = formatSimilarity(lastEvent.minSimilarityScore);
+
+    const details = document.createElement('details');
+    details.className = 'rag-debug';
+
+    const summary = document.createElement('summary');
+    const roundText = events.length > 1 ? `${events.length} 次检索 · ` : '';
+    summary.textContent = `检索过程：${roundText}最近命中 ${hitCount}/${candidateCount}${thresholdText ? ` · 阈值 ${thresholdText}` : ''}`;
+    details.appendChild(summary);
+
+    const body = document.createElement('div');
+    for (const [index, debug] of events.entries()) {
+      const block = document.createElement('div');
+      block.className = 'rag-debug-block rag-debug-body';
+
+      appendRagDebugItem(block, '轮次', `${index + 1}`);
+      appendRagDebugItem(block, '检索问题', debug.query || '未记录');
+      appendRagDebugItem(block, '检索范围', getRagScopeText(debug.scope));
+      appendRagDebugItem(block, '候选数量', `${Number(debug.candidateCount || 0)}`);
+      appendRagDebugItem(block, '命中数量', `${Number(debug.hitCount || 0)}`);
+
+      const itemThresholdText = formatSimilarity(debug.minSimilarityScore);
+      if (itemThresholdText) appendRagDebugItem(block, '最低阈值', itemThresholdText);
+      if (debug.requestedK) appendRagDebugItem(block, '请求 K 值', `${debug.requestedK}`);
+
+      const reasonText = getRagReasonText(debug.reason);
+      if (reasonText) {
+        const note = document.createElement('div');
+        note.className = 'rag-debug-note';
+        note.textContent = reasonText;
+        block.appendChild(note);
+      }
+
+      body.appendChild(block);
+    }
+
+    details.appendChild(body);
+    content.appendChild(details);
+
+    const container = document.getElementById('messages');
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function appendRagDebugItem(container, label, value) {
+    const item = document.createElement('div');
+    item.className = 'rag-debug-item';
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'rag-debug-label';
+    labelEl.textContent = `${label}：`;
+
+    const valueEl = document.createElement('span');
+    valueEl.className = 'rag-debug-value';
+    valueEl.textContent = value;
+
+    item.appendChild(labelEl);
+    item.appendChild(valueEl);
+    container.appendChild(item);
+  }
+
+  function formatSimilarity(score) {
+    if (typeof score !== 'number' || !Number.isFinite(score)) return '';
+    return `${Math.round(score * 100)}%`;
+  }
+
+  function getRagScopeText(scope = {}) {
+    const names = Array.isArray(scope.names)
+      ? scope.names.filter(Boolean)
+      : [];
+
+    if (scope.type === 'none') return '无可检索文档';
+    if (scope.type === 'selected') {
+      return names.length > 0 ? names.join('、') : '选中文档';
+    }
+    return '全部文档';
+  }
+
+  function getRagReasonText(reason) {
+    const reasonMap = {
+      no_documents: '当前没有上传文档，所以没有进入向量检索。',
+      target_not_found: '用户指定的文档不存在或尚未完成索引。',
+      outside_scope: '用户指定的文档不在当前选中的检索范围内。',
+      no_relevant_chunks: '向量库返回了候选片段，但没有片段达到最低相关度阈值。',
+    };
+
+    return reasonMap[reason] || '';
   }
 
   /** 显示处理状态（带动画圆点） */
@@ -1332,6 +1517,29 @@
 
     const container = document.getElementById('messages');
     container.scrollTop = container.scrollHeight;
+  }
+
+  /** 把 RAG 命中数同步到工具步骤上，方便一眼看到这次检索是否有效 */
+  function updateAgentStepWithRagDebug(debug) {
+    const key = debug.id || 'unknown_tool';
+    const step = activeToolStepEls.get(key);
+    if (!step) return;
+
+    const candidateCount = Number(debug.candidateCount || 0);
+    const hitCount = Number(debug.hitCount || 0);
+    const textEl = step.querySelector('.agent-step-text');
+    if (textEl) {
+      textEl.textContent = `检索上传文档完成（命中 ${hitCount}/${candidateCount}）`;
+    }
+
+    const thresholdText = formatSimilarity(debug.minSimilarityScore) || '无';
+    step.title = [
+      `检索问题：${debug.query || '未记录'}`,
+      `检索范围：${getRagScopeText(debug.scope)}`,
+      `候选数量：${candidateCount}`,
+      `命中数量：${hitCount}`,
+      `最低阈值：${thresholdText}`,
+    ].join('\n');
   }
 
   /** 显示系统提示（居中小字） */
@@ -1577,7 +1785,7 @@
           const imgUrl = msg.imagePath ? `/${msg.imagePath}` : null;
           appendUserMessage(msg.content, imgUrl);
         } else if (msg.role === 'assistant') {
-          appendAssistantMessage(msg.content);
+          appendAssistantMessage(msg.content, msg.trace);
         }
       }
     } catch (err) {

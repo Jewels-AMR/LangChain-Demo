@@ -210,13 +210,20 @@ export async function attachDocumentIdToIndex(storedFilename, documentId) {
  * @param {string} query - 用户的问题
  * @param {number} k - 返回几个最相关的块，默认 3
  * @param {{ documentIds?: string[], minSimilarityScore?: number }} options - 可选过滤条件
- * @returns {{ context: string, sources: Array<object> }} 相关内容和来源引用
+ * @returns {{ context: string, sources: Array<object>, minSimilarityScore: number, candidateCount: number, hitCount: number, requestedK: number, documentIds: string[] }} 相关内容、来源引用和检索统计
  */
 export async function retrieveContext(query, k = 3, options = {}) {
+  const minSimilarityScore = getMinSimilarityScore(options);
+
   if (!(await hasIndexedDocuments())) {
     return {
       context: '（当前没有上传任何文档，无法检索）',
       sources: [],
+      minSimilarityScore,
+      candidateCount: 0,
+      hitCount: 0,
+      requestedK: k,
+      documentIds: [],
     };
   }
 
@@ -228,7 +235,6 @@ export async function retrieveContext(query, k = 3, options = {}) {
     : documentIds.length > 1
       ? { documentId: { in: documentIds } }
       : undefined;
-  const minSimilarityScore = getMinSimilarityScore(options);
 
   // similaritySearchWithScore 返回 [Document, score]。
   // score 已在 vectorStore.js 中归一化为 0-1，越高越相关。
@@ -278,6 +284,9 @@ export async function retrieveContext(query, k = 3, options = {}) {
     sources,
     minSimilarityScore,
     candidateCount: scoredResults.length,
+    hitCount: sources.length,
+    requestedK: k,
+    documentIds,
   };
 }
 
