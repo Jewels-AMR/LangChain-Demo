@@ -4,6 +4,8 @@
 // 这一层只暴露稳定能力：
 //   addDocumentsToVectorStore()  存入文档向量
 //   searchSimilarDocuments()     相似度检索，可按 metadata 过滤
+//   searchSimilarDocumentsWithScore()
+//                                相似度检索，并返回相关度分数
 //   hasIndexedDocuments()        判断是否已有索引
 //   deleteDocumentsFromVectorStoreByDocumentId()
 //                                删除某个 documentId 对应的向量
@@ -50,6 +52,8 @@ const vectorStoreConfig = {
   },
   // cosine 适合大多数文本 embedding 检索场景。
   distanceStrategy: 'cosine',
+  // 让 similaritySearchWithScore 返回“越高越相关”的 0-1 分数。
+  scoreNormalization: 'similarity',
 };
 
 // PGVectorStore 初始化会连接数据库并确保表存在。
@@ -95,6 +99,20 @@ export async function searchSimilarDocuments(query, k = 3, filter = undefined) {
 
   // similaritySearch 内部会自动调用 embeddings.embedQuery(query)
   return vectorStore.similaritySearch(query, k, filter);
+}
+
+/**
+ * 根据用户问题做相似度检索，并返回相关度分数
+ *
+ * @param {string} query - 用户问题
+ * @param {number} k - 返回最相似的文档数量
+ * @param {object | undefined} filter - metadata 过滤条件
+ * @returns {Promise<Array<[object, number]>>} [Document, score] 数组，score 越高越相关
+ */
+export async function searchSimilarDocumentsWithScore(query, k = 3, filter = undefined) {
+  const vectorStore = await getVectorStore();
+
+  return vectorStore.similaritySearchWithScore(query, k, filter);
 }
 
 /**

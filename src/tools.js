@@ -83,7 +83,12 @@ export function createDocumentRetrievalTool(options = {}) {
         ? (targetDocument ? [targetDocument.id] : forcedDocumentIds)
         : (targetDocument ? [targetDocument.id] : []);
 
-      const { context, sources } = await retrieveContext(query, 3, {
+      const {
+        context,
+        sources,
+        minSimilarityScore,
+        candidateCount,
+      } = await retrieveContext(query, 3, {
         documentIds,
       });
       const scopeText = documentIds.length > 0
@@ -96,10 +101,12 @@ export function createDocumentRetrievalTool(options = {}) {
 
       // content 给模型阅读，用来生成回答；artifact 给后端/前端使用，不交给模型自由改写。
       return [
-        `${scopeText}以下是从文档中检索到的相关内容：\n\n${context}\n\n请基于上述文档内容回答。引用来源由系统单独展示，你不要在回答末尾重复手写来源列表。`,
+        `${scopeText}检索候选数：${candidateCount}，最低相关度阈值：${minSimilarityScore.toFixed(2)}。\n\n以下是从文档中检索到的相关内容：\n\n${context}\n\n请基于上述文档内容回答。引用来源由系统单独展示，你不要在回答末尾重复手写来源列表。如果没有检索到高相关片段，请直接说明文档中没有找到足够相关的信息。`,
         {
           type: 'document_sources',
           sources,
+          minSimilarityScore,
+          candidateCount,
         },
       ];
     },

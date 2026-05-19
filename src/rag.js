@@ -22,10 +22,20 @@ import {
   deleteDocumentsFromVectorStoreByStoredFilename,
   getVectorIndexStatsByStoredFilename,
   hasIndexedDocuments,
-  searchSimilarDocuments,
+  searchSimilarDocumentsWithScore,
 } from './vectorStore.js';
 
 // -------------------------------------------------------
+
+const DEFAULT_MIN_SIMILARITY_SCORE = 0.25;
+
+function getMinSimilarityScore(options = {}) {
+  const rawValue = options.minSimilarityScore ?? process.env.RAG_MIN_SIMILARITY_SCORE;
+  const score = Number(rawValue ?? DEFAULT_MIN_SIMILARITY_SCORE);
+
+  if (!Number.isFinite(score)) return DEFAULT_MIN_SIMILARITY_SCORE;
+  return Math.min(1, Math.max(0, score));
+}
 // 向量库说明
 //
 // 具体向量库实现已经下沉到 vectorStore.js。
@@ -199,7 +209,7 @@ export async function attachDocumentIdToIndex(storedFilename, documentId) {
  *
  * @param {string} query - 用户的问题
  * @param {number} k - 返回几个最相关的块，默认 3
- * @param {{ documentIds?: string[] }} options - 可选过滤条件
+ * @param {{ documentIds?: string[], minSimilarityScore?: number }} options - 可选过滤条件
  * @returns {{ context: string, sources: Array<object> }} 相关内容和来源引用
  */
 export async function retrieveContext(query, k = 3, options = {}) {
@@ -218,11 +228,21 @@ export async function retrieveContext(query, k = 3, options = {}) {
     : documentIds.length > 1
       ? { documentId: { in: documentIds } }
       : undefined;
+  const minSimilarityScore = getMinSimilarityScore(options);
 
-  // similaritySearch 返回最相似的 k 个 Document 对象
-  const results = await searchSimilarDocuments(query, k, filter);
+  // similaritySearchWithScore 返回 [Document, score]。
+  // score 已在 vectorStore.js 中归一化为 0-1，越高越相关。
+  const scoredResults = await searchSimilarDocumentsWithScore(query, k, filter);
+  const results = scoredResults
+    .map(([doc, score]) => ({
+      doc,
+      score: Number(score),
+    }))
+    .filter((item) =>
+      Number.isFinite(item.score) && item.score >= minSimilarityScore
+    );
 
-  const sources = results.map((doc, index) => ({
+  const sources = results.map(({ doc, score }, index) => ({
     id: index + 1,
     filename: doc.metadata.filename || '未知文件',
     documentId: doc.metadata.documentId || null,
@@ -230,18 +250,21 @@ export async function retrieveContext(query, k = 3, options = {}) {
     chunkId: doc.metadata.chunkId,
     sourceId: doc.metadata.sourceId,
     sourcePath: doc.metadata.sourcePath,
+    score,
+    minSimilarityScore,
     preview: doc.pageContent.slice(0, 120),
   }));
 
   // 把多个块的内容拼接成带来源编号的上下文，方便 Agent 在回答中引用。
   const context = results
-    .map((doc, index) => {
+    .map(({ doc, score }, index) => {
       const source = sources[index];
       return [
         `[来源 ${source.id}]`,
         `文件：${source.filename}`,
         source.page ? `页码：${source.page}` : null,
         `chunkId：${source.chunkId}`,
+        `相关度：${score.toFixed(3)}`,
         '',
         doc.pageContent,
       ]
@@ -251,8 +274,10 @@ export async function retrieveContext(query, k = 3, options = {}) {
     .join('\n\n---\n\n');
 
   return {
-    context: context || '（没有检索到相关文档片段）',
+    context: context || `（没有检索到相关度高于 ${minSimilarityScore.toFixed(2)} 的文档片段）`,
     sources,
+    minSimilarityScore,
+    candidateCount: scoredResults.length,
   };
 }
 

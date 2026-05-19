@@ -1239,8 +1239,11 @@
 
       const pageText = source.page ? ` 第 ${source.page} 页` : '';
       const chunkText = source.chunkId !== undefined ? ` · chunk ${source.chunkId}` : '';
+      const scoreText = typeof source.score === 'number'
+        ? ` · 相关度 ${Math.round(source.score * 100)}%`
+        : '';
       const summary = document.createElement('summary');
-      summary.textContent = `[${source.id}] ${source.filename || '未知文件'}${pageText}${chunkText}`;
+      summary.textContent = `[${source.id}] ${source.filename || '未知文件'}${pageText}${chunkText}${scoreText}`;
 
       const preview = document.createElement('div');
       preview.className = 'source-preview';
