@@ -202,6 +202,16 @@
       border-radius: 8px;
       margin-bottom: 6px;
       border: 1px solid #d4edda;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .file-item:hover { background: #eef8f2; }
+
+    .file-item.scope-active {
+      background: #e7f6ee;
+      border-color: #40916c;
+      box-shadow: inset 3px 0 0 #40916c;
     }
 
     .file-icon { font-size: 18px; flex-shrink: 0; }
@@ -687,6 +697,39 @@
       padding: 0 4px;
     }
 
+    .document-scope-bar {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      background: #eef8f2;
+      border: 1px solid #b7e4c7;
+      border-radius: 8px;
+      padding: 7px 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: #2d6a4f;
+    }
+
+    .document-scope-bar.show { display: flex; }
+
+    .document-scope-bar span {
+      min-width: 0;
+      flex: 1;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .document-scope-bar button {
+      background: none;
+      border: none;
+      color: #40916c;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 0;
+    }
+
     .input-row {
       display: flex;
       gap: 10px;
@@ -843,6 +886,11 @@
         <button class="clear-btn" onclick="removeImage()">✕</button>
       </div>
 
+      <div class="document-scope-bar" id="documentScopeBar">
+        <span id="documentScopeText">检索范围：全部文档</span>
+        <button onclick="clearDocumentScope()">全部文档</button>
+      </div>
+
       <div class="input-row">
         <textarea
           id="userInput"
@@ -874,6 +922,7 @@
   let currentImageDataUrl = null;    // 图片本地预览用的 DataURL
   let currentAgentSteps = null;      // 当前这次请求的 Agent 步骤面板
   let activeToolStepEls = new Map(); // tool_call_id -> 步骤 DOM
+  let selectedDocumentIds = new Set(); // 当前强制检索范围，空集合表示检索全部文档
 
   // 会话 ID：每次启动默认创建新对话
   let threadId = `thread_${Date.now()}`;
@@ -921,7 +970,7 @@
         currentImagePath = data.filePath; // 保存服务器路径
         // 侧边栏显示原始文件名，但删除时必须使用服务器保存的文件名。
         // 服务端保存名通常是时间戳，例如 1779084707715.jpg。
-        addFileToList('🖼️', file.name, '图片已就绪', data.filename);
+        addFileToList('🖼️', file.name, '图片已就绪', data.filename, null, 'image');
       } else {
         showSystemMsg(`上传失败：${data.error}`);
       }
@@ -963,7 +1012,7 @@
       if (data.success) {
         // 侧边栏显示原始文件名，但删除时必须使用服务器保存的文件名。
         // 这样才能同步删除 uploads/ 文件和 pgvector 里的索引。
-        addFileToList('📄', file.name, data.message, data.filename);
+        addFileToList('📄', file.name, data.message, data.filename, data.documentId, 'document');
         showSystemMsg(`文档"${file.name}"已建立索引，可以直接提问了`);
       } else {
         showSystemMsg(`上传失败：${data.error}`);
@@ -1010,6 +1059,7 @@
           message: sendText,
           threadId,
           imagePath: currentImagePath,
+          selectedDocumentIds: [...selectedDocumentIds],
         }),
       });
 
@@ -1298,7 +1348,7 @@
     container.scrollTop = container.scrollHeight;
   }
 
-  function addFileToList(icon, name, status, filename) {
+  function addFileToList(icon, name, status, filename, documentId, fileType = 'file') {
     const list = document.getElementById('fileList');
     const empty = list.querySelector('.empty-hint');
     if (empty) empty.remove();
@@ -1306,6 +1356,9 @@
     const item = document.createElement('div');
     item.className = 'file-item';
     item.dataset.filename = filename || name;
+    item.dataset.displayName = name;
+    item.dataset.fileType = fileType;
+    if (documentId) item.dataset.documentId = documentId;
     item.innerHTML = `
       <input type="checkbox" class="item-checkbox" onchange="updateBatchBtn('file')">
       <div class="file-icon">${icon}</div>
@@ -1315,7 +1368,52 @@
       </div>
       <button class="delete-btn" title="删除文件" onclick="deleteFile('${filename || name}', this)">✕</button>
     `;
+    item.addEventListener('click', (event) => {
+      if (!documentId) return;
+      if (list.classList.contains('select-mode')) return;
+      if (event.target.closest('.delete-btn') || event.target.closest('.item-checkbox')) return;
+      toggleDocumentScope(documentId);
+    });
     list.appendChild(item);
+    updateDocumentScopeUI();
+  }
+
+  function toggleDocumentScope(documentId) {
+    if (selectedDocumentIds.has(documentId)) {
+      selectedDocumentIds.delete(documentId);
+    } else {
+      selectedDocumentIds.add(documentId);
+    }
+    updateDocumentScopeUI();
+  }
+
+  function clearDocumentScope() {
+    selectedDocumentIds.clear();
+    updateDocumentScopeUI();
+  }
+
+  function updateDocumentScopeUI() {
+    const selectedNames = [];
+
+    document.querySelectorAll('#fileList .file-item').forEach((item) => {
+      const documentId = item.dataset.documentId;
+      const active = documentId && selectedDocumentIds.has(documentId);
+      item.classList.toggle('scope-active', Boolean(active));
+      if (active) selectedNames.push(item.dataset.displayName || item.dataset.filename);
+    });
+
+    const bar = document.getElementById('documentScopeBar');
+    const text = document.getElementById('documentScopeText');
+    if (!bar || !text) return;
+
+    if (selectedNames.length === 0) {
+      bar.classList.remove('show');
+      text.textContent = '检索范围：全部文档';
+      return;
+    }
+
+    bar.classList.add('show');
+    text.textContent = `检索范围：${selectedNames.join('、')}`;
   }
 
   /** 删除已上传的文件 */
@@ -1326,7 +1424,10 @@
       const data = await res.json();
       if (data.success) {
         if (currentImagePath === `uploads/${filename}`) removeImage();
-        btnEl.closest('.file-item').remove();
+        const item = btnEl.closest('.file-item');
+        if (item?.dataset.documentId) selectedDocumentIds.delete(item.dataset.documentId);
+        item?.remove();
+        updateDocumentScopeUI();
         checkFileListEmpty();
       } else if (data.error) {
         showSystemMsg(`删除失败：${data.error}`);
@@ -1535,12 +1636,27 @@
       list.innerHTML = '';
       for (const f of data.files) {
         const icon = f.type === 'image' ? '🖼️' : '📄';
-        const status = f.type === 'image' ? '图片已上传' : '文档已上传';
-        addFileToList(icon, f.filename, status, f.filename);
+        const displayName = f.originalName || f.filename;
+        const status = getFileStatusText(f);
+        addFileToList(icon, displayName, status, f.filename, f.documentId, f.type);
       }
+      selectedDocumentIds = new Set(
+        [...selectedDocumentIds].filter((id) =>
+          list.querySelector(`.file-item[data-document-id="${CSS.escape(id)}"]`)
+        )
+      );
+      updateDocumentScopeUI();
     } catch (err) {
       console.error('加载文件列表失败:', err);
     }
+  }
+
+  function getFileStatusText(file) {
+    if (file.type === 'image') return '图片已上传';
+    if (file.status === 'failed') return '索引失败';
+    if (file.status === 'indexing') return '正在建立索引';
+    if (file.status === 'indexed') return `已索引 ${file.chunkCount || 0} 个块`;
+    return '文档已上传';
   }
 
   // ── 多选管理 ──
@@ -1611,7 +1727,12 @@
         if (filenames.some((filename) => currentImagePath === `uploads/${filename}`)) {
           removeImage();
         }
-        checked.forEach(cb => cb.closest('.file-item').remove());
+        checked.forEach((cb) => {
+          const item = cb.closest('.file-item');
+          if (item?.dataset.documentId) selectedDocumentIds.delete(item.dataset.documentId);
+          item?.remove();
+        });
+        updateDocumentScopeUI();
         checkFileListEmpty();
       } else if (data.error) {
         showSystemMsg(`批量删除失败：${data.error}`);

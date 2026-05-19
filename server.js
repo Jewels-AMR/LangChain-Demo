@@ -23,10 +23,24 @@ import { fileURLToPath } from 'url';
 import Database from 'better-sqlite3';
 import { invokeAgent, streamAgent } from './src/agent.js';
 import {
+  attachDocumentIdToIndex,
   cleanupMissingDocumentIndexes,
+  deleteDocumentIndexById,
   deleteDocumentIndex,
+  getDocumentIndexStats,
   processDocument,
 } from './src/rag.js';
+import {
+  createDocumentRecord,
+  deleteDocumentRecordByStoredFilename,
+  deleteDocumentRecordsNotInStoredFilenames,
+  ensureDocumentTable,
+  getDocumentByStoredFilename,
+  listDocuments,
+  markDocumentFailed,
+  markDocumentIndexed,
+  upsertDocumentRecordForExistingFile,
+} from './src/documentStore.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -92,16 +106,38 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 
     if (isDocument) {
       console.log(`[Server] 收到文档: ${file.originalname}`);
-      const chunkCount = await processDocument(file.path, {
+
+      // 先创建 documents 业务记录，拿到稳定 documentId。
+      // 后续每个 chunk 的 metadata 都会带上这个 documentId。
+      const documentRecord = await createDocumentRecord({
         originalName: file.originalname,
+        storedFilename,
+        fileType: ext.replace('.', ''),
+        sourcePath: `uploads/${storedFilename}`,
       });
+
+      let indexedDocument = documentRecord;
+      let chunkCount = 0;
+      try {
+        chunkCount = await processDocument(file.path, {
+          originalName: file.originalname,
+          documentId: documentRecord.id,
+        });
+        indexedDocument = await markDocumentIndexed(documentRecord.id, chunkCount);
+      } catch (indexError) {
+        await markDocumentFailed(documentRecord.id, indexError.message);
+        throw indexError;
+      }
+
       res.json({
         success: true,
         type: 'document',
         message: `文档上传成功，已切分为 ${chunkCount} 个块并建立索引`,
+        documentId: indexedDocument.id,
         filePath: file.path,
         filename: storedFilename,
         originalName: file.originalname,
+        chunkCount,
       });
     } else if (isImage) {
       console.log(`[Server] 收到图片: ${file.originalname}`);
@@ -128,9 +164,17 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 // -------------------------------------------------------
 app.post('/chat', async (req, res) => {
   try {
-    const { message, threadId = 'default', imagePath } = req.body;
+    const {
+      message,
+      threadId = 'default',
+      imagePath,
+      selectedDocumentIds = [],
+    } = req.body;
 
     if (!message) return res.status(400).json({ error: '消息不能为空' });
+    const documentScopeIds = Array.isArray(selectedDocumentIds)
+      ? selectedDocumentIds.filter((id) => typeof id === 'string' && id.trim())
+      : [];
 
     console.log(`[Server] 收到消息 (thread: ${threadId}): ${message}`);
 
@@ -149,6 +193,7 @@ app.post('/chat', async (req, res) => {
     // - tool_result：工具执行完成或失败
     for await (const event of streamAgent(fullMessage, threadId, {
       hasImage: Boolean(imagePath),
+      selectedDocumentIds: documentScopeIds,
     })) {
       const payload = typeof event === 'string'
         ? { type: 'text', content: event }
@@ -304,7 +349,13 @@ app.post('/files/batch-delete', async (req, res) => {
       // 文档文件删除时，同步删除 pgvector 中对应的 chunk 向量。
       // 图片没有入向量库，所以不需要删索引。
       if (isDocumentFilename(safeFilename)) {
+        const documentRecord = await getDocumentByStoredFilename(safeFilename);
+        if (documentRecord?.id) {
+          deletedChunks += await deleteDocumentIndexById(documentRecord.id);
+        }
+        // 兼容旧数据：早期 chunk metadata 里没有 documentId，只能用 storedFilename 删除。
         deletedChunks += await deleteDocumentIndex(safeFilename);
+        await deleteDocumentRecordByStoredFilename(safeFilename);
       }
 
       if (fs.existsSync(filePath)) {
@@ -334,7 +385,13 @@ app.delete('/files/:filename', async (req, res) => {
     // 先删向量索引，再删物理文件。
     // 即使物理文件已经不存在，也要尽量清理 pgvector 里的旧索引。
     if (isDocumentFilename(filename)) {
-      deletedChunks = await deleteDocumentIndex(filename);
+      const documentRecord = await getDocumentByStoredFilename(filename);
+      if (documentRecord?.id) {
+        deletedChunks += await deleteDocumentIndexById(documentRecord.id);
+      }
+      // 兼容旧数据：早期 chunk metadata 里没有 documentId，只能用 storedFilename 删除。
+      deletedChunks += await deleteDocumentIndex(filename);
+      await deleteDocumentRecordByStoredFilename(filename);
     }
 
     if (fs.existsSync(filePath)) {
@@ -353,22 +410,47 @@ app.delete('/files/:filename', async (req, res) => {
 // -------------------------------------------------------
 // 路由：GET /files —— 获取已上传的文件列表
 // -------------------------------------------------------
-app.get('/files', (req, res) => {
+app.get('/files', async (req, res) => {
   try {
     const uploadsDir = path.join(__dirname, 'uploads');
-    const files = fs.readdirSync(uploadsDir).map((filename) => {
-      const stat = fs.statSync(path.join(uploadsDir, filename));
-      return {
-        filename,
-        type: isImageFilename(filename) ? 'image' : 'document',
-        path: `uploads/${filename}`,
-        time: stat.mtimeMs,
-      };
-    });
+    const uploadFilenames = fs.existsSync(uploadsDir)
+      ? fs.readdirSync(uploadsDir)
+      : [];
+
+    // 文档列表从 documents 表读取，保留 originalName、documentId、chunkCount 等业务信息。
+    const documents = await listDocuments();
+    const documentFiles = documents.map((doc) => ({
+      documentId: doc.id,
+      filename: doc.storedFilename,
+      originalName: doc.originalName,
+      type: 'document',
+      path: doc.sourcePath,
+      status: doc.status,
+      chunkCount: doc.chunkCount,
+      errorMessage: doc.errorMessage,
+      time: doc.createdAt ? new Date(doc.createdAt).getTime() : 0,
+    }));
+
+    // 图片不进入 RAG 知识库，仍然从 uploads/ 目录扫描。
+    const imageFiles = uploadFilenames
+      .filter(isImageFilename)
+      .map((filename) => {
+        const stat = fs.statSync(path.join(uploadsDir, filename));
+        return {
+          filename,
+          originalName: filename,
+          type: 'image',
+          path: `uploads/${filename}`,
+          time: stat.mtimeMs,
+        };
+      });
+
+    const files = [...documentFiles, ...imageFiles];
     // 按上传时间倒序
     files.sort((a, b) => b.time - a.time);
     res.json({ files });
   } catch (err) {
+    console.error('[Server] 获取文件列表失败:', err);
     res.json({ files: [] });
   }
 });
@@ -378,27 +460,52 @@ app.get('/files', (req, res) => {
 //
 // 现在向量库已经换成 pgvector，索引会持久化在 PostgreSQL 中。
 // 因此启动时不能再扫描 uploads/ 重建索引，否则每次重启都会重复写入 chunk。
-// 这里只做“孤儿索引清理”：uploads/ 里不存在的文档，其 pgvector 索引也应该删除。
+// 启动时只做轻量同步：
+//  1. 确保 documents 表存在
+//  2. 把旧版本已有的 uploads 文档补进 documents 表
+//  3. 清理 uploads/ 里不存在的 documents 记录和 pgvector 孤儿索引
 // -------------------------------------------------------
-async function cleanupOrphanIndexes() {
+async function syncDocumentRegistry() {
   try {
+    await ensureDocumentTable();
+
     const uploadsDir = path.join(__dirname, 'uploads');
     const validDocumentFilenames = fs.existsSync(uploadsDir)
       ? fs.readdirSync(uploadsDir).filter(isDocumentFilename)
       : [];
 
+    for (const storedFilename of validDocumentFilenames) {
+      const fileType = path.extname(storedFilename).replace('.', '').toLowerCase();
+      const sourcePath = `uploads/${storedFilename}`;
+      const stats = await getDocumentIndexStats(storedFilename);
+      const originalName = stats.metadata?.filename || storedFilename;
+
+      const documentRecord = await upsertDocumentRecordForExistingFile({
+        originalName,
+        storedFilename,
+        fileType,
+        sourcePath,
+        chunkCount: stats.chunkCount,
+      });
+
+      await attachDocumentIdToIndex(storedFilename, documentRecord.id);
+    }
+
+    const deletedDocuments = await deleteDocumentRecordsNotInStoredFilenames(validDocumentFilenames);
     const deletedChunks = await cleanupMissingDocumentIndexes(validDocumentFilenames);
-    if (deletedChunks > 0) {
-      console.log(`[启动] 已清理 ${deletedChunks} 条孤儿文档向量索引`);
+    if (deletedDocuments > 0 || deletedChunks > 0) {
+      console.log(
+        `[启动] 文档登记同步完成：清理 ${deletedDocuments} 条文档记录，${deletedChunks} 条孤儿向量索引`
+      );
     }
   } catch (err) {
     // 数据库没有启动时，不阻塞普通聊天和前端页面启动。
     // 用户上传文档或检索文档时，接口会再返回明确错误。
-    console.warn(`[启动] 孤儿索引清理跳过: ${err.message}`);
+    console.warn(`[启动] 文档登记同步跳过: ${err.message}`);
   }
 }
 
-cleanupOrphanIndexes().finally(() => {
+syncDocumentRegistry().finally(() => {
   app.listen(PORT, () => {
     console.log(`\n🚀 私厨问答管家已启动`);
     console.log(`📡 访问地址：http://localhost:${PORT}`);

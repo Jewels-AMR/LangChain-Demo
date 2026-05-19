@@ -3,12 +3,16 @@
 //
 // 这一层只暴露稳定能力：
 //   addDocumentsToVectorStore()  存入文档向量
-//   searchSimilarDocuments()     相似度检索
+//   searchSimilarDocuments()     相似度检索，可按 metadata 过滤
 //   hasIndexedDocuments()        判断是否已有索引
+//   deleteDocumentsFromVectorStoreByDocumentId()
+//                                删除某个 documentId 对应的向量
 //   deleteDocumentsFromVectorStoreByStoredFilename()
 //                                删除某个上传文件对应的向量
 //   deleteDocumentIndexesNotInStoredFilenames()
 //                                清理 uploads/ 中已不存在的孤儿索引
+//   attachDocumentIdToVectorIndex()
+//                                给旧 chunk metadata 回填 documentId
 //
 // rag.js 不直接依赖具体向量数据库。
 // 后续切换 Qdrant / Redis 时，优先改这个文件。
@@ -16,6 +20,7 @@
 
 import { PGVectorStore } from '@langchain/community/vectorstores/pgvector';
 import { OpenAIEmbeddings } from '@langchain/openai';
+import { postgresPool } from './postgres.js';
 
 // -------------------------------------------------------
 // Embedding 模型初始化
@@ -33,21 +38,9 @@ const embeddings = new OpenAIEmbeddings({
   },
 });
 
-// pgvector 连接配置
-//
-// 这里的默认值和 docker-compose.yml 保持一致。
-// 如果未来要连接云数据库，只需要改 .env，不需要改 RAG 流程代码。
-const postgresConnectionOptions = {
-  type: 'postgres',
-  host: process.env.POSTGRES_HOST || '127.0.0.1',
-  port: Number(process.env.POSTGRES_PORT || 5432),
-  database: process.env.POSTGRES_DB || 'agent_demo',
-  user: process.env.POSTGRES_USER || 'agent',
-  password: process.env.POSTGRES_PASSWORD || 'agent_password',
-};
-
 const vectorStoreConfig = {
-  postgresConnectionOptions,
+  // 和 documents 表共用同一个 PostgreSQL 连接池。
+  pool: postgresPool,
   tableName: process.env.VECTOR_TABLE_NAME || 'rag_chunks',
   columns: {
     idColumnName: 'id',
@@ -94,13 +87,39 @@ export async function addDocumentsToVectorStore(documents) {
  *
  * @param {string} query - 用户问题
  * @param {number} k - 返回最相似的文档数量
+ * @param {object | undefined} filter - metadata 过滤条件，例如 { documentId: '...' }
  * @returns {Promise<Array>} 命中的 Document 数组
  */
-export async function searchSimilarDocuments(query, k = 3) {
+export async function searchSimilarDocuments(query, k = 3, filter = undefined) {
   const vectorStore = await getVectorStore();
 
   // similaritySearch 内部会自动调用 embeddings.embedQuery(query)
-  return vectorStore.similaritySearch(query, k);
+  return vectorStore.similaritySearch(query, k, filter);
+}
+
+/**
+ * 删除某个 documentId 对应的所有 chunk 向量
+ *
+ * documents 表的一条记录，对应 rag_chunks 表里的多条 chunk。
+ * 用 documentId 删除比用文件名更稳定，后续支持同名文件时不会误删。
+ *
+ * @param {string} documentId - documents.id
+ * @returns {Promise<number>} 删除的向量行数
+ */
+export async function deleteDocumentsFromVectorStoreByDocumentId(documentId) {
+  if (!documentId) return 0;
+
+  const vectorStore = await getVectorStore();
+  const metadataColumn = vectorStore.metadataColumnName;
+  const result = await vectorStore.pool.query(
+    `
+      DELETE FROM ${vectorStore.computedTableName}
+      WHERE "${metadataColumn}"->>'documentId' = $1
+    `,
+    [documentId]
+  );
+
+  return result.rowCount || 0;
 }
 
 /**
@@ -161,6 +180,70 @@ export async function deleteDocumentIndexesNotInStoredFilenames(validStoredFilen
         AND NOT (("${metadataColumn}"->>'storedFilename') = ANY($1::text[]))
     `,
     [validStoredFilenames]
+  );
+
+  return result.rowCount || 0;
+}
+
+/**
+ * 读取某个上传文件在向量表中的索引统计
+ *
+ * 用于把旧数据迁移进 documents 表：
+ * 旧版本只有 rag_chunks.metadata，没有 documents 业务表。
+ *
+ * @param {string} storedFilename - 服务器保存的文件名
+ * @returns {Promise<{ chunkCount: number, metadata: object | null }>}
+ */
+export async function getVectorIndexStatsByStoredFilename(storedFilename) {
+  const vectorStore = await getVectorStore();
+  const metadataColumn = vectorStore.metadataColumnName;
+  const result = await vectorStore.pool.query(
+    `
+      SELECT
+        COUNT(*)::int AS chunk_count,
+        MIN("${metadataColumn}"::text)::jsonb AS sample_metadata
+      FROM ${vectorStore.computedTableName}
+      WHERE "${metadataColumn}"->>'storedFilename' = $1
+         OR "${metadataColumn}"->>'sourcePath' = $2
+    `,
+    [storedFilename, `uploads/${storedFilename}`]
+  );
+
+  const row = result.rows[0];
+  return {
+    chunkCount: Number(row?.chunk_count || 0),
+    metadata: row?.sample_metadata || null,
+  };
+}
+
+/**
+ * 给某个上传文件的旧向量索引回填 documentId
+ *
+ * 旧版本 metadata 只有 storedFilename，没有 documentId。
+ * 回填后，sources、删除和后续筛选都可以稳定使用 documentId。
+ *
+ * @param {string} storedFilename - 服务器保存的文件名
+ * @param {string} documentId - documents.id
+ * @returns {Promise<number>} 更新的向量行数
+ */
+export async function attachDocumentIdToVectorIndex(storedFilename, documentId) {
+  if (!storedFilename || !documentId) return 0;
+
+  const vectorStore = await getVectorStore();
+  const metadataColumn = vectorStore.metadataColumnName;
+  const result = await vectorStore.pool.query(
+    `
+      UPDATE ${vectorStore.computedTableName}
+      SET "${metadataColumn}" = jsonb_set(
+        "${metadataColumn}",
+        '{documentId}',
+        to_jsonb($1::text),
+        true
+      )
+      WHERE "${metadataColumn}"->>'storedFilename' = $2
+         OR "${metadataColumn}"->>'sourcePath' = $3
+    `,
+    [documentId, storedFilename, `uploads/${storedFilename}`]
   );
 
   return result.rowCount || 0;

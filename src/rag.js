@@ -16,8 +16,11 @@ import { TextLoader } from '@langchain/classic/document_loaders/fs/text';
 import path from 'path';
 import {
   addDocumentsToVectorStore,
+  attachDocumentIdToVectorIndex,
   deleteDocumentIndexesNotInStoredFilenames,
+  deleteDocumentsFromVectorStoreByDocumentId,
   deleteDocumentsFromVectorStoreByStoredFilename,
+  getVectorIndexStatsByStoredFilename,
   hasIndexedDocuments,
   searchSimilarDocuments,
 } from './vectorStore.js';
@@ -67,7 +70,7 @@ function getLoader(filePath) {
  *  3. 向量化 + 存入向量库 → 为后续检索做准备
  *
  * @param {string} filePath - 上传文件在服务器上的路径
- * @param {{ originalName?: string }} options - 上传时保留的文件信息
+ * @param {{ originalName?: string, documentId?: string }} options - 上传时保留的文件信息
  * @returns {number} 最终存入向量库的块数量
  */
 export async function processDocument(filePath, options = {}) {
@@ -78,6 +81,7 @@ export async function processDocument(filePath, options = {}) {
 
   const storedFilename = path.basename(filePath);
   const filename = options.originalName || storedFilename;
+  const documentId = options.documentId || null;
   const ext = path.extname(filePath).toLowerCase();
   const sourcePath = `uploads/${storedFilename}`;
 
@@ -88,6 +92,7 @@ export async function processDocument(filePath, options = {}) {
     metadata: {
       ...doc.metadata,
       filename,
+      documentId,
       storedFilename,
       sourcePath,
       fileType: ext.replace('.', ''),
@@ -114,7 +119,7 @@ export async function processDocument(filePath, options = {}) {
     metadata: {
       ...chunk.metadata,
       chunkId,
-      sourceId: `${storedFilename}#${chunkId}`,
+      sourceId: `${documentId || storedFilename}#${chunkId}`,
     },
   }));
   console.log(`[RAG] 切块完成，共 ${chunks.length} 个块`);
@@ -142,6 +147,16 @@ export async function deleteDocumentIndex(storedFilename) {
 }
 
 /**
+ * 通过 documentId 删除某个上传文档对应的向量索引
+ *
+ * @param {string} documentId - documents.id
+ * @returns {Promise<number>} 删除的 chunk 数量
+ */
+export async function deleteDocumentIndexById(documentId) {
+  return deleteDocumentsFromVectorStoreByDocumentId(documentId);
+}
+
+/**
  * 清理 uploads/ 里已经不存在的文档对应的向量索引
  *
  * @param {string[]} validStoredFilenames - 当前仍存在的上传文档文件名
@@ -149,6 +164,29 @@ export async function deleteDocumentIndex(storedFilename) {
  */
 export async function cleanupMissingDocumentIndexes(validStoredFilenames) {
   return deleteDocumentIndexesNotInStoredFilenames(validStoredFilenames);
+}
+
+/**
+ * 读取某个上传文件在 pgvector 中的索引统计
+ *
+ * 启动时用于把旧版本 metadata 迁移进 documents 表。
+ *
+ * @param {string} storedFilename - 服务器保存的文件名
+ * @returns {Promise<{ chunkCount: number, metadata: object | null }>}
+ */
+export async function getDocumentIndexStats(storedFilename) {
+  return getVectorIndexStatsByStoredFilename(storedFilename);
+}
+
+/**
+ * 给旧版 chunk metadata 回填 documentId
+ *
+ * @param {string} storedFilename - 服务器保存的文件名
+ * @param {string} documentId - documents.id
+ * @returns {Promise<number>} 更新的 chunk 数量
+ */
+export async function attachDocumentIdToIndex(storedFilename, documentId) {
+  return attachDocumentIdToVectorIndex(storedFilename, documentId);
 }
 
 /**
@@ -161,9 +199,10 @@ export async function cleanupMissingDocumentIndexes(validStoredFilenames) {
  *
  * @param {string} query - 用户的问题
  * @param {number} k - 返回几个最相关的块，默认 3
+ * @param {{ documentIds?: string[] }} options - 可选过滤条件
  * @returns {{ context: string, sources: Array<object> }} 相关内容和来源引用
  */
-export async function retrieveContext(query, k = 3) {
+export async function retrieveContext(query, k = 3, options = {}) {
   if (!(await hasIndexedDocuments())) {
     return {
       context: '（当前没有上传任何文档，无法检索）',
@@ -171,12 +210,22 @@ export async function retrieveContext(query, k = 3) {
     };
   }
 
+  const documentIds = Array.isArray(options.documentIds)
+    ? options.documentIds.filter(Boolean)
+    : [];
+  const filter = documentIds.length === 1
+    ? { documentId: documentIds[0] }
+    : documentIds.length > 1
+      ? { documentId: { in: documentIds } }
+      : undefined;
+
   // similaritySearch 返回最相似的 k 个 Document 对象
-  const results = await searchSimilarDocuments(query, k);
+  const results = await searchSimilarDocuments(query, k, filter);
 
   const sources = results.map((doc, index) => ({
     id: index + 1,
     filename: doc.metadata.filename || '未知文件',
+    documentId: doc.metadata.documentId || null,
     page: doc.metadata.page || null,
     chunkId: doc.metadata.chunkId,
     sourceId: doc.metadata.sourceId,
@@ -201,7 +250,10 @@ export async function retrieveContext(query, k = 3) {
     })
     .join('\n\n---\n\n');
 
-  return { context, sources };
+  return {
+    context: context || '（没有检索到相关文档片段）',
+    sources,
+  };
 }
 
 /**

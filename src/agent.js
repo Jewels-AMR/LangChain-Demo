@@ -16,8 +16,13 @@ import { createAgent } from 'langchain';
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite';
 import { HumanMessage } from '@langchain/core/messages';
 import { CHEF_SYSTEM_PROMPT } from './prompts.js';
-import { allTools } from './tools.js';
+import {
+  createDocumentRetrievalTool,
+  imageAnalysisTool,
+  webSearchTool,
+} from './tools.js';
 import { hasDocuments } from './rag.js';
+import { listIndexedDocuments } from './documentStore.js';
 
 // -------------------------------------------------------
 // LLM 模型初始化
@@ -79,19 +84,49 @@ function summarizeToolContent(content) {
   return text.replace(/\s+/g, ' ').slice(0, 120);
 }
 
-function selectTools({ hasImage, hasDocs }) {
-  return allTools.filter((tool) => {
-    // 没有图片时不把 image_analysis 暴露给模型，避免模型误判后进入图片分析流程。
-    if (tool.name === 'image_analysis') return hasImage;
+function selectTools({ hasImage, hasDocs, forcedDocumentIds = [], scopedDocuments = [] }) {
+  const tools = [];
 
-    // 没有文档索引时不暴露 document_retrieval，普通菜谱问题直接走 web_search。
-    if (tool.name === 'document_retrieval') return hasDocs;
+  // 没有文档索引时不暴露 document_retrieval，普通菜谱问题直接走 web_search。
+  if (hasDocs) {
+    tools.push(createDocumentRetrievalTool({
+      forcedDocumentIds,
+      scopedDocuments,
+    }));
+  }
 
-    return true;
-  });
+  // 没有图片时不把 image_analysis 暴露给模型，避免模型误判后进入图片分析流程。
+  if (hasImage) tools.push(imageAnalysisTool);
+
+  tools.push(webSearchTool);
+  return tools;
 }
 
-function buildSystemPrompt({ hasImage, hasDocs }) {
+function formatAvailableDocuments(documents) {
+  if (!documents.length) return '- 当前没有 documents 表登记的可检索文档。';
+
+  return documents
+    .slice(0, 10)
+    .map((doc) =>
+      `- ${doc.originalName}（documentId: ${doc.id}，chunk: ${doc.chunkCount}）`
+    )
+    .join('\n');
+}
+
+function formatForcedDocumentScope(scopedDocuments) {
+  if (!scopedDocuments.length) return '';
+
+  return scopedDocuments
+    .map((doc) => `- ${doc.originalName}（documentId: ${doc.id}）`)
+    .join('\n');
+}
+
+function buildSystemPrompt({
+  hasImage,
+  hasDocs,
+  documents = [],
+  scopedDocuments = [],
+}) {
   const requestState = [
     '【当前请求状态】',
     hasImage
@@ -100,8 +135,14 @@ function buildSystemPrompt({ hasImage, hasDocs }) {
     hasDocs
       ? '- 当前已有上传文档索引，可以在文档相关问题中调用 document_retrieval。'
       : '- 当前没有可检索的上传文档。普通菜谱、天气、搭配建议等问题不要说明"没有上传文档"，直接继续处理；只有用户明确询问文档内容时才说明目前没有文档。',
+    hasDocs
+      ? `【可检索文档】\n${formatAvailableDocuments(documents)}\n如果用户明确指定某个文件，调用 document_retrieval 时优先传入对应 documentId。`
+      : null,
+    scopedDocuments.length > 0
+      ? `【本轮强制检索范围】\n${formatForcedDocumentScope(scopedDocuments)}\ndocument_retrieval 工具已被后端限制在上述文档内。`
+      : null,
     '- 不要在回答开头描述"我先检查是否有图片/文档"这类内部流程，直接给用户结果。',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   return `${CHEF_SYSTEM_PROMPT}\n\n${requestState}`;
 }
@@ -109,7 +150,28 @@ function buildSystemPrompt({ hasImage, hasDocs }) {
 async function createChefAgent(options = {}) {
   const hasImage = Boolean(options.hasImage);
   const hasDocs = await hasDocuments();
-  const tools = selectTools({ hasImage, hasDocs });
+  const selectedDocumentIds = Array.isArray(options.selectedDocumentIds)
+    ? options.selectedDocumentIds.filter(Boolean)
+    : [];
+  let documents = [];
+  if (hasDocs) {
+    try {
+      documents = await listIndexedDocuments();
+    } catch (error) {
+      console.warn(`[Agent] 获取可检索文档列表失败: ${error.message}`);
+    }
+  }
+  const selectedIdSet = new Set(selectedDocumentIds);
+  const scopedDocuments = selectedDocumentIds.length > 0
+    ? documents.filter((doc) => selectedIdSet.has(doc.id))
+    : [];
+  const forcedDocumentIds = scopedDocuments.map((doc) => doc.id);
+  const tools = selectTools({
+    hasImage,
+    hasDocs,
+    forcedDocumentIds,
+    scopedDocuments,
+  });
 
   // 每次请求按上下文创建 Agent：
   // 工具集会随“是否有图片/是否有文档”变化，Agent loop 就不会走不存在的分支。
@@ -118,7 +180,12 @@ async function createChefAgent(options = {}) {
       model,
       tools,
       checkpointer,
-      systemPrompt: buildSystemPrompt({ hasImage, hasDocs }),
+      systemPrompt: buildSystemPrompt({
+        hasImage,
+        hasDocs,
+        documents,
+        scopedDocuments,
+      }),
     }),
     toolNames: new Set(tools.map((tool) => tool.name)),
   };

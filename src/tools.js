@@ -18,6 +18,7 @@ import { HumanMessage } from '@langchain/core/messages';
 import { tavily } from '@tavily/core';
 import sharp from 'sharp';
 import { retrieveContext, hasDocuments } from './rag.js';
+import { findIndexedDocumentByIdentifier } from './documentStore.js';
 
 // -------------------------------------------------------
 // 工具一：文档检索工具（RAG）
@@ -26,39 +27,99 @@ import { retrieveContext, hasDocuments } from './rag.js';
 // Agent 会调用这个工具去向量库里找相关段落，
 // 再把找到的内容结合进回答中。
 // -------------------------------------------------------
-export const documentRetrievalTool = tool(
-  async ({ query }) => {
-    if (!(await hasDocuments())) {
+export function createDocumentRetrievalTool(options = {}) {
+  const forcedDocumentIds = Array.isArray(options.forcedDocumentIds)
+    ? options.forcedDocumentIds.filter(Boolean)
+    : [];
+  const scopedDocuments = Array.isArray(options.scopedDocuments)
+    ? options.scopedDocuments
+    : [];
+
+  return tool(
+    async ({ query, documentId, filename }) => {
+      if (!(await hasDocuments())) {
+        return [
+          '用户还没有上传任何文档，请提示用户先上传文件。',
+          {
+            type: 'document_sources',
+            sources: [],
+          },
+        ];
+      }
+
+      const targetDocument = documentId
+        ? await findIndexedDocumentByIdentifier(documentId)
+        : filename
+          ? await findIndexedDocumentByIdentifier(filename)
+          : null;
+      const forcedIdSet = new Set(forcedDocumentIds);
+
+      if ((documentId || filename) && !targetDocument) {
+        return [
+          `没有找到可检索的指定文档：${documentId || filename}。请改为检索全部已上传文档，或提示用户确认文件名。`,
+          {
+            type: 'document_sources',
+            sources: [],
+          },
+        ];
+      }
+
+      if (
+        forcedDocumentIds.length > 0 &&
+        targetDocument &&
+        !forcedIdSet.has(targetDocument.id)
+      ) {
+        const scopeNames = scopedDocuments.map((doc) => doc.originalName).join('、');
+        return [
+          `当前会话已限定检索范围：${scopeNames || '选中文档'}。指定文档不在当前范围内，不能检索。`,
+          {
+            type: 'document_sources',
+            sources: [],
+          },
+        ];
+      }
+
+      const documentIds = forcedDocumentIds.length > 0
+        ? (targetDocument ? [targetDocument.id] : forcedDocumentIds)
+        : (targetDocument ? [targetDocument.id] : []);
+
+      const { context, sources } = await retrieveContext(query, 3, {
+        documentIds,
+      });
+      const scopeText = documentIds.length > 0
+        ? `检索范围：${
+            targetDocument
+              ? targetDocument.originalName
+              : scopedDocuments.map((doc) => doc.originalName).join('、')
+          }\n\n`
+        : '';
+
+      // content 给模型阅读，用来生成回答；artifact 给后端/前端使用，不交给模型自由改写。
       return [
-        '用户还没有上传任何文档，请提示用户先上传文件。',
+        `${scopeText}以下是从文档中检索到的相关内容：\n\n${context}\n\n请基于上述文档内容回答。引用来源由系统单独展示，你不要在回答末尾重复手写来源列表。`,
         {
           type: 'document_sources',
-          sources: [],
+          sources,
         },
       ];
+    },
+    {
+      name: 'document_retrieval',
+      description:
+        '当用户的问题涉及他上传的文件内容时使用此工具。' +
+        '输入用户的问题，工具会从上传的文档中检索最相关的段落并返回。' +
+        '如果用户明确指定某个文件，请传入 documentId；如果只有文件名，请传入 filename。',
+      responseFormat: 'content_and_artifact',
+      schema: z.object({
+        query: z.string().describe('用户的问题或搜索关键词'),
+        documentId: z.string().optional().describe('可选，指定只检索某个 documents.id'),
+        filename: z.string().optional().describe('可选，指定只检索某个上传文件名或原始文件名'),
+      }),
     }
-    const { context, sources } = await retrieveContext(query);
+  );
+}
 
-    // content 给模型阅读，用来生成回答；artifact 给后端/前端使用，不交给模型自由改写。
-    return [
-      `以下是从文档中检索到的相关内容：\n\n${context}\n\n请基于上述文档内容回答。引用来源由系统单独展示，你不要在回答末尾重复手写来源列表。`,
-      {
-        type: 'document_sources',
-        sources,
-      },
-    ];
-  },
-  {
-    name: 'document_retrieval',
-    description:
-      '当用户的问题涉及他上传的文件内容时使用此工具。' +
-      '输入用户的问题，工具会从上传的文档中检索最相关的段落并返回。',
-    responseFormat: 'content_and_artifact',
-    schema: z.object({
-      query: z.string().describe('用户的问题或搜索关键词'),
-    }),
-  }
-);
+export const documentRetrievalTool = createDocumentRetrievalTool();
 
 // -------------------------------------------------------
 // 工具二：图片分析工具（多模态）
