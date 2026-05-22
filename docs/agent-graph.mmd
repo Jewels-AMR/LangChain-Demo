@@ -1,0 +1,47 @@
+%%{init: {'flowchart': {'curve': 'basis'}}}%%
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	intent_classifier(intent_classifier)
+	supervisor(supervisor)
+	chef_agent___start__(<p>__start__</p>)
+	chef_agent_agent(agent)
+	chef_agent_tools(tools)
+	chef_agent___end__(<p>__end__</p>)
+	research_agent___start__(<p>__start__</p>)
+	research_agent_agent(agent)
+	research_agent_tools(tools)
+	research_agent___end__(<p>__end__</p>)
+	meal_planner(meal_planner)
+	dish_researcher(dish_researcher)
+	meal_aggregator(meal_aggregator)
+	gentle_refuse(gentle_refuse)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> intent_classifier;
+	chef_agent___end__ --> supervisor;
+	dish_researcher --> meal_aggregator;
+	gentle_refuse --> __end__;
+	meal_aggregator --> __end__;
+	research_agent___end__ --> supervisor;
+	intent_classifier -.-> supervisor;
+	intent_classifier -.-> meal_planner;
+	intent_classifier -.-> gentle_refuse;
+	supervisor -.-> chef_agent___start__;
+	supervisor -.-> research_agent___start__;
+	supervisor -.-> __end__;
+	meal_planner -.-> dish_researcher;
+	meal_planner -.-> supervisor;
+	subgraph chef_agent
+	chef_agent___start__ --> chef_agent_agent;
+	chef_agent_tools --> chef_agent_agent;
+	chef_agent_agent -.-> chef_agent_tools;
+	chef_agent_agent -.-> chef_agent___end__;
+	end
+	subgraph research_agent
+	research_agent___start__ --> research_agent_agent;
+	research_agent_tools --> research_agent_agent;
+	research_agent_agent -.-> research_agent_tools;
+	research_agent_agent -.-> research_agent___end__;
+	end
+	classDef default fill:#f2f0ff,line-height:1.2;
+	classDef first fill-opacity:0;
+	classDef last fill:#bfb6fc;

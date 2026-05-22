@@ -20,6 +20,16 @@ import sharp from 'sharp';
 import { retrieveContext, hasDocuments } from './rag.js';
 import { findIndexedDocumentByIdentifier } from './documentStore.js';
 
+function normalizeTextList(value) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item).trim()).filter(Boolean)
+    : [];
+}
+
+function formatNumber(value, digits = 0) {
+  return Number(value).toFixed(digits).replace(/\.0+$/, '');
+}
+
 function createDocumentSourcesArtifact({
   query,
   scopeType = 'all',
@@ -254,7 +264,7 @@ export const imageAnalysisTool = tool(
 );
 
 // -------------------------------------------------------
-// 工具三：联网搜索工具（Tavily）
+// Tavily 联网搜索客户端
 //
 // Tavily 是专门为 AI Agent 设计的搜索引擎：
 //  - 返回结构化的搜索结果（而不是原始 HTML）
@@ -271,6 +281,285 @@ export const imageAnalysisTool = tool(
 // -------------------------------------------------------
 // tavily() 是工厂函数，传入 apiKey 返回客户端实例
 const tavilyClient = tavily({ apiKey: process.env.TAVILY_API_KEY });
+
+// -------------------------------------------------------
+// 工具三：菜谱规划工具
+//
+// 这个工具是本地规则工具，不调用模型。
+// 它的价值是让 Agent 在“已经知道食材”的情况下，
+// 先得到结构化候选方案，再由 LLM 组织成自然语言回答。
+// -------------------------------------------------------
+const recipeTemplates = [
+  {
+    name: '番茄炒蛋',
+    required: ['番茄', '鸡蛋'],
+    optional: ['葱', '蒜', '盐', '糖'],
+    minutes: 12,
+    difficulty: '简单',
+    nutrition: '优质蛋白 + 番茄红素',
+    steps: ['番茄切块，鸡蛋打散', '先炒鸡蛋盛出', '炒番茄出汁后回锅鸡蛋调味'],
+  },
+  {
+    name: '青椒土豆丝',
+    required: ['土豆', '青椒'],
+    optional: ['醋', '蒜', '干辣椒'],
+    minutes: 15,
+    difficulty: '简单',
+    nutrition: '主食替代 + 膳食纤维',
+    steps: ['土豆切丝冲洗淀粉', '热锅爆香蒜末', '大火快炒并加醋保持脆感'],
+  },
+  {
+    name: '鸡胸肉蔬菜碗',
+    required: ['鸡胸肉'],
+    optional: ['西兰花', '胡萝卜', '玉米', '生菜'],
+    minutes: 25,
+    difficulty: '中等',
+    nutrition: '高蛋白 + 低脂',
+    steps: ['鸡胸肉腌制后煎熟', '蔬菜焯水或煎香', '按蛋白质、蔬菜、主食分区装盘'],
+  },
+  {
+    name: '菌菇豆腐汤',
+    required: ['豆腐'],
+    optional: ['香菇', '金针菇', '鸡蛋', '葱'],
+    minutes: 18,
+    difficulty: '简单',
+    nutrition: '植物蛋白 + 清淡低负担',
+    steps: ['菌菇洗净切段', '清水煮开后下豆腐和菌菇', '出锅前调味并撒葱花'],
+  },
+];
+
+function scoreRecipe(template, ingredientSet) {
+  const requiredHits = template.required.filter((item) => ingredientSet.has(item)).length;
+  const optionalHits = template.optional.filter((item) => ingredientSet.has(item)).length;
+  return requiredHits * 10 + optionalHits * 2;
+}
+
+export const recipePlannerTool = tool(
+  async ({ ingredients = [], mealType = '正餐', servings = 1, maxMinutes = 30 }) => {
+    const normalizedIngredients = normalizeTextList(ingredients);
+    const ingredientSet = new Set(normalizedIngredients);
+    const rankedRecipes = recipeTemplates
+      .map((template) => ({
+        ...template,
+        score: scoreRecipe(template, ingredientSet),
+      }))
+      .filter((recipe) => recipe.score > 0 && recipe.minutes <= Number(maxMinutes || 30))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3);
+
+    if (rankedRecipes.length === 0) {
+      return [
+        `已收到食材：${normalizedIngredients.join('、') || '未提供明确食材'}。`,
+        '本地菜谱库没有足够匹配的方案，建议继续调用 web_search 搜索更多菜谱。',
+      ].join('\n');
+    }
+
+    const formatted = rankedRecipes
+      .map((recipe, index) => [
+        `${index + 1}. ${recipe.name}`,
+        `   类型：${mealType}；人数：${servings}；预计 ${recipe.minutes} 分钟；难度：${recipe.difficulty}`,
+        `   匹配分：${recipe.score}`,
+        `   营养特点：${recipe.nutrition}`,
+        `   核心步骤：${recipe.steps.join(' -> ')}`,
+      ].join('\n'))
+      .join('\n\n');
+
+    return `根据现有食材规划出的候选菜谱：\n\n${formatted}`;
+  },
+  {
+    name: 'recipe_planner',
+    description:
+      '当用户已经提供食材，并希望获得菜谱、晚餐搭配、做饭方案时使用。' +
+      '这个工具会根据食材给出结构化候选菜谱、耗时、难度和核心步骤。',
+    schema: z.object({
+      ingredients: z.array(z.string()).describe('用户已有食材清单，例如 ["番茄", "鸡蛋"]'),
+      mealType: z.string().optional().describe('用餐类型，例如 早餐、午餐、晚餐、便当'),
+      servings: z.number().optional().describe('用餐人数'),
+      maxMinutes: z.number().optional().describe('期望最大烹饪时间，单位分钟'),
+    }),
+  }
+);
+
+// -------------------------------------------------------
+// 工具四：购物清单工具
+//
+// 用于把“想做的菜”和“已有食材”对比，
+// 输出缺少什么、哪些是可选补充，适合真实任务型 Agent。
+// -------------------------------------------------------
+const dishIngredientMap = [
+  {
+    keywords: ['番茄炒蛋', '西红柿炒鸡蛋'],
+    required: ['番茄', '鸡蛋'],
+    pantry: ['盐', '糖', '食用油'],
+    optional: ['葱'],
+  },
+  {
+    keywords: ['青椒土豆丝'],
+    required: ['土豆', '青椒'],
+    pantry: ['盐', '醋', '食用油'],
+    optional: ['蒜', '干辣椒'],
+  },
+  {
+    keywords: ['鸡胸肉蔬菜碗', '减脂餐'],
+    required: ['鸡胸肉', '西兰花'],
+    pantry: ['盐', '黑胡椒', '橄榄油'],
+    optional: ['玉米', '胡萝卜', '生菜'],
+  },
+  {
+    keywords: ['菌菇豆腐汤'],
+    required: ['豆腐', '菌菇'],
+    pantry: ['盐', '白胡椒'],
+    optional: ['葱', '鸡蛋'],
+  },
+];
+
+function findDishTemplate(targetDish = '') {
+  return dishIngredientMap.find((dish) =>
+    dish.keywords.some((keyword) => targetDish.includes(keyword))
+  );
+}
+
+export const shoppingListTool = tool(
+  async ({ targetDish, availableIngredients = [], servings = 1 }) => {
+    const availableSet = new Set(normalizeTextList(availableIngredients));
+    const template = findDishTemplate(targetDish);
+
+    if (!template) {
+      return `暂未找到"${targetDish}"的本地配料模板。建议调用 web_search 查询标准配料后再整理购物清单。`;
+    }
+
+    const missingRequired = template.required.filter((item) => !availableSet.has(item));
+    const missingPantry = template.pantry.filter((item) => !availableSet.has(item));
+    const optional = template.optional.filter((item) => !availableSet.has(item));
+
+    return [
+      `目标菜品：${targetDish}`,
+      `用餐人数：${servings}`,
+      `必须购买：${missingRequired.length ? missingRequired.join('、') : '无'}`,
+      `基础调料检查：${missingPantry.length ? missingPantry.join('、') : '基础调料已覆盖'}`,
+      `可选提升：${optional.length ? optional.join('、') : '无'}`,
+      '请根据用户预算和口味，把必须购买和可选提升分开展示。',
+    ].join('\n');
+  },
+  {
+    name: 'shopping_list',
+    description:
+      '当用户想做某道菜，并询问还需要买什么、缺什么、购物清单时使用。',
+    schema: z.object({
+      targetDish: z.string().describe('目标菜品名称，例如 番茄炒蛋'),
+      availableIngredients: z.array(z.string()).optional().describe('用户已经有的食材或调料'),
+      servings: z.number().optional().describe('用餐人数'),
+    }),
+  }
+);
+
+// -------------------------------------------------------
+// 工具五：营养估算工具
+//
+// 注意：这是粗略估算，不做医疗建议。
+// 目的是让 Agent 学会把“营养/热量问题”交给专门工具处理。
+// -------------------------------------------------------
+const nutritionTable = {
+  鸡蛋: { calories: 70, protein: 6 },
+  番茄: { calories: 25, protein: 1 },
+  土豆: { calories: 160, protein: 4 },
+  青椒: { calories: 20, protein: 1 },
+  鸡胸肉: { calories: 165, protein: 31 },
+  豆腐: { calories: 90, protein: 8 },
+  西兰花: { calories: 35, protein: 3 },
+  米饭: { calories: 230, protein: 4 },
+};
+
+export const nutritionEstimatorTool = tool(
+  async ({ items = [] }) => {
+    const normalizedItems = Array.isArray(items) ? items : [];
+    const lines = [];
+    let totalCalories = 0;
+    let totalProtein = 0;
+
+    for (const item of normalizedItems) {
+      const name = String(item.name || '').trim();
+      if (!name) continue;
+
+      const unitCount = Number(item.unitCount || 1);
+      const nutrition = nutritionTable[name];
+      if (!nutrition) {
+        lines.push(`- ${name}：暂无本地估算数据`);
+        continue;
+      }
+
+      const calories = nutrition.calories * unitCount;
+      const protein = nutrition.protein * unitCount;
+      totalCalories += calories;
+      totalProtein += protein;
+      lines.push(
+        `- ${name} x ${formatNumber(unitCount, 1)}：约 ${formatNumber(calories)} kcal，蛋白质 ${formatNumber(protein, 1)} g`
+      );
+    }
+
+    if (!lines.length) {
+      return '没有收到可估算的食材。请让用户提供食材名称和大致份量。';
+    }
+
+    return [
+      '粗略营养估算如下，实际数值会受重量、品牌和烹饪方式影响：',
+      ...lines,
+      `合计：约 ${formatNumber(totalCalories)} kcal，蛋白质 ${formatNumber(totalProtein, 1)} g`,
+      '这只是普通饮食估算，不作为医疗或减重处方。',
+    ].join('\n');
+  },
+  {
+    name: 'nutrition_estimator',
+    description:
+      '当用户询问热量、蛋白质、营养是否均衡、减脂餐估算时使用。' +
+      '工具只做粗略饮食估算，不提供医疗建议。',
+    schema: z.object({
+      items: z.array(z.object({
+        name: z.string().describe('食材名称，例如 鸡蛋、番茄、鸡胸肉'),
+        unitCount: z.number().optional().describe('估算份数，例如 2 表示两个鸡蛋或两份'),
+      })).describe('需要估算的食材列表'),
+    }),
+  }
+);
+
+// -------------------------------------------------------
+// 工具六：天气查询工具
+//
+// 天气是典型“必须查最新信息”的工具场景。
+// 这里复用 Tavily，把天气查询和普通 web_search 分开，
+// 方便前端观察 Agent 选择了专门工具。
+// -------------------------------------------------------
+export const weatherLookupTool = tool(
+  async ({ location, date }) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const targetDate = date || today;
+    const query = `${location} ${targetDate} 天气 气温 降雨`;
+
+    console.log(`[Tool] 天气查询: ${query}`);
+
+    const results = await tavilyClient.search(query, {
+      maxResults: 4,
+      includeImages: false,
+    });
+
+    const formatted = results.results
+      .map((result, index) =>
+        `[${index + 1}] ${result.title}\n来源：${result.url}\n摘要：${result.content}`
+      )
+      .join('\n\n');
+
+    return `以下是"${location}"在 ${targetDate} 附近的天气查询结果：\n\n${formatted}`;
+  },
+  {
+    name: 'weather_lookup',
+    description:
+      '当用户询问今天、明天、某地天气、气温、下雨、是否适合出门买菜或户外用餐时使用。',
+    schema: z.object({
+      location: z.string().describe('城市或地区，例如 上海、北京、杭州'),
+      date: z.string().optional().describe('日期，建议使用 YYYY-MM-DD；不填则默认今天'),
+    }),
+  }
+);
 
 function isHttpUrl(value) {
   try {
@@ -303,6 +592,12 @@ function formatSearchImages(images = []) {
   ].join('\n');
 }
 
+// -------------------------------------------------------
+// 工具七：联网搜索工具（Tavily）
+//
+// Tavily 返回结构化搜索结果和图片 URL。
+// 当本地工具、RAG 文档都不足以回答时，用它补充最新网络信息。
+// -------------------------------------------------------
 export const webSearchTool = tool(
   async ({ query }) => {
     // 天气类查询自动补充今天日期，避免 Tavily 返回缓存的过期数据
@@ -343,4 +638,12 @@ export const webSearchTool = tool(
 );
 
 // 导出所有工具，供 Agent 注册使用
-export const allTools = [documentRetrievalTool, imageAnalysisTool, webSearchTool];
+export const allTools = [
+  documentRetrievalTool,
+  imageAnalysisTool,
+  recipePlannerTool,
+  shoppingListTool,
+  nutritionEstimatorTool,
+  weatherLookupTool,
+  webSearchTool,
+];

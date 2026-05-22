@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent LangGraph</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      background: #f6f7f9;
+      color: #1f2933;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    p {
+      margin: 0 0 20px;
+      color: #667085;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .graph-wrap {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      overflow: auto;
+    }
+
+    h2 {
+      margin: 24px 0 12px;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <h1>私厨 Agent 多 Agent LangGraph</h1>
+  <p>集成了 LangGraph 核心组件：Supervisor + Sub-graph 多 Agent 调度、Annotation 自定义状态、Send 并行扇出、多级条件路由。第一张图来自 LangGraph 的 getGraph().drawMermaid()。第二张图展开子图内部结构和工具分配。</p>
+  <h2>LangGraph 原生图</h2>
+  <div class="graph-wrap">
+    <pre class="mermaid">%%{init: {'flowchart': {'curve': 'basis'}}}%%
+graph TD;
+	__start__([&lt;p&gt;__start__&lt;/p&gt;]):::first
+	intent_classifier(intent_classifier)
+	supervisor(supervisor)
+	chef_agent___start__(&lt;p&gt;__start__&lt;/p&gt;)
+	chef_agent_agent(agent)
+	chef_agent_tools(tools)
+	chef_agent___end__(&lt;p&gt;__end__&lt;/p&gt;)
+	research_agent___start__(&lt;p&gt;__start__&lt;/p&gt;)
+	research_agent_agent(agent)
+	research_agent_tools(tools)
+	research_agent___end__(&lt;p&gt;__end__&lt;/p&gt;)
+	meal_planner(meal_planner)
+	dish_researcher(dish_researcher)
+	meal_aggregator(meal_aggregator)
+	gentle_refuse(gentle_refuse)
+	__end__([&lt;p&gt;__end__&lt;/p&gt;]):::last
+	__start__ --&gt; intent_classifier;
+	chef_agent___end__ --&gt; supervisor;
+	dish_researcher --&gt; meal_aggregator;
+	gentle_refuse --&gt; __end__;
+	meal_aggregator --&gt; __end__;
+	research_agent___end__ --&gt; supervisor;
+	intent_classifier -.-&gt; supervisor;
+	intent_classifier -.-&gt; meal_planner;
+	intent_classifier -.-&gt; gentle_refuse;
+	supervisor -.-&gt; chef_agent___start__;
+	supervisor -.-&gt; research_agent___start__;
+	supervisor -.-&gt; __end__;
+	meal_planner -.-&gt; dish_researcher;
+	meal_planner -.-&gt; supervisor;
+	subgraph chef_agent
+	chef_agent___start__ --&gt; chef_agent_agent;
+	chef_agent_tools --&gt; chef_agent_agent;
+	chef_agent_agent -.-&gt; chef_agent_tools;
+	chef_agent_agent -.-&gt; chef_agent___end__;
+	end
+	subgraph research_agent
+	research_agent___start__ --&gt; research_agent_agent;
+	research_agent_tools --&gt; research_agent_agent;
+	research_agent_agent -.-&gt; research_agent_tools;
+	research_agent_agent -.-&gt; research_agent___end__;
+	end
+	classDef default fill:#f2f0ff,line-height:1.2;
+	classDef first fill-opacity:0;
+	classDef last fill:#bfb6fc;
+</pre>
+  </div>
+  <h2>工具展开图</h2>
+  <div class="graph-wrap">
+    <pre class="mermaid">%%{init: {'flowchart': {'curve': 'basis'}}}%%
+graph TD;
+  start([START]) --&gt; intent_classifier[“intent_classifier&lt;br/&gt;意图分类”];
+
+  %% ====== 三条意图分支 ======
+  intent_classifier -. “general_chat” .-&gt; supervisor[“supervisor&lt;br/&gt;总调度”];
+  intent_classifier -. “meal_plan” .-&gt; meal_planner[“meal_planner&lt;br/&gt;菜品规划”];
+  intent_classifier -. “off_topic” .-&gt; gentle_refuse[“gentle_refuse&lt;br/&gt;礼貌拒绝”];
+
+  %% ====== Supervisor 多 Agent 调度循环 ======
+  supervisor -. “chef_agent” .-&gt; chef_agent;
+  supervisor -. “research_agent” .-&gt; research_agent;
+  supervisor -. “done” .-&gt; finish([END]);
+
+  %% 烹饪专家子图（Sub-graph）
+  subgraph chef_agent[“🍳 chef_agent 烹饪专家（子图）”]
+    chef_react[“agent&lt;br/&gt;ReAct 循环”] -. “tool_calls” .-&gt; chef_tools[“tools&lt;br/&gt;ToolNode”];
+  chef_tools --&gt; chef_recipe_planner[“recipe_planner&lt;br/&gt;菜谱规划”];
+  chef_tools --&gt; chef_shopping_list[“shopping_list&lt;br/&gt;购物清单”];
+  chef_tools --&gt; chef_nutrition_estimator[“nutrition_estimator&lt;br/&gt;营养估算”];
+  chef_tools --&gt; chef_weather_lookup[“weather_lookup&lt;br/&gt;天气查询”];
+    chef_tools --&gt; chef_react;
+    chef_react -. “完成” .-&gt; chef_out((“ “));
+  end
+  chef_agent --&gt; supervisor;
+
+  %% 检索专家子图（Sub-graph）
+  subgraph research_agent[“🔍 research_agent 检索专家（子图）”]
+    research_react[“agent&lt;br/&gt;ReAct 循环”] -. “tool_calls” .-&gt; research_tools[“tools&lt;br/&gt;ToolNode”];
+  research_tools --&gt; research_document_retrieval[“document_retrieval&lt;br/&gt;RAG 文档检索”];
+  research_tools --&gt; research_image_analysis[“image_analysis&lt;br/&gt;图片食材分析”];
+  research_tools --&gt; research_web_search[“web_search&lt;br/&gt;联网搜索”];
+    research_tools --&gt; research_react;
+    research_react -. “完成” .-&gt; research_out((“ “));
+  end
+  research_agent --&gt; supervisor;
+
+  %% ====== meal_plan 分支：Send 并行扇出 ======
+  meal_planner -. “无菜品（回退）” .-&gt; supervisor;
+  meal_planner -. “Send” .-&gt; dish_0[“dish_researcher&lt;br/&gt;菜品 A”];
+  dish_0 --&gt; meal_aggregator;
+  meal_planner -. “Send” .-&gt; dish_1[“dish_researcher&lt;br/&gt;菜品 B”];
+  dish_1 --&gt; meal_aggregator;
+  meal_planner -. “Send” .-&gt; dish_2[“dish_researcher&lt;br/&gt;菜品 N...”];
+  dish_2 --&gt; meal_aggregator;
+  meal_aggregator[“meal_aggregator&lt;br/&gt;结果汇总”] --&gt; finish;
+
+  %% ====== off_topic 分支 ======
+  gentle_refuse --&gt; finish;
+
+  %% 样式
+  style intent_classifier fill:#e8f4fd,stroke:#4a90d9
+  style supervisor fill:#e8eaf6,stroke:#3f51b5
+  style chef_agent fill:#e8f5e9,stroke:#4caf50
+  style research_agent fill:#fff8e1,stroke:#ffc107
+  style meal_planner fill:#fff3e0,stroke:#ff9800
+  style meal_aggregator fill:#fff3e0,stroke:#ff9800
+  style gentle_refuse fill:#fce4ec,stroke:#e91e63
+</pre>
+  </div>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, theme: 'default' });
+  </script>
+</body>
+</html>

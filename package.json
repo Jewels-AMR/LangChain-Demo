@@ -5,6 +5,8 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
+    "draw:graph": "node --import dotenv/config scripts/draw-agent-graph.js",
+    "prompt:maker": "node --import dotenv/config scripts/prompt-maker.js",
     "start": "node server.js"
   },
   "dependencies": {

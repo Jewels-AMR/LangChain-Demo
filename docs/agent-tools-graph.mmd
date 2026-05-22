@@ -1,0 +1,58 @@
+%%{init: {'flowchart': {'curve': 'basis'}}}%%
+graph TD;
+  start([START]) --> intent_classifier[“intent_classifier<br/>意图分类”];
+
+  %% ====== 三条意图分支 ======
+  intent_classifier -. “general_chat” .-> supervisor[“supervisor<br/>总调度”];
+  intent_classifier -. “meal_plan” .-> meal_planner[“meal_planner<br/>菜品规划”];
+  intent_classifier -. “off_topic” .-> gentle_refuse[“gentle_refuse<br/>礼貌拒绝”];
+
+  %% ====== Supervisor 多 Agent 调度循环 ======
+  supervisor -. “chef_agent” .-> chef_agent;
+  supervisor -. “research_agent” .-> research_agent;
+  supervisor -. “done” .-> finish([END]);
+
+  %% 烹饪专家子图（Sub-graph）
+  subgraph chef_agent[“🍳 chef_agent 烹饪专家（子图）”]
+    chef_react[“agent<br/>ReAct 循环”] -. “tool_calls” .-> chef_tools[“tools<br/>ToolNode”];
+  chef_tools --> chef_recipe_planner[“recipe_planner<br/>菜谱规划”];
+  chef_tools --> chef_shopping_list[“shopping_list<br/>购物清单”];
+  chef_tools --> chef_nutrition_estimator[“nutrition_estimator<br/>营养估算”];
+  chef_tools --> chef_weather_lookup[“weather_lookup<br/>天气查询”];
+    chef_tools --> chef_react;
+    chef_react -. “完成” .-> chef_out((“ “));
+  end
+  chef_agent --> supervisor;
+
+  %% 检索专家子图（Sub-graph）
+  subgraph research_agent[“🔍 research_agent 检索专家（子图）”]
+    research_react[“agent<br/>ReAct 循环”] -. “tool_calls” .-> research_tools[“tools<br/>ToolNode”];
+  research_tools --> research_document_retrieval[“document_retrieval<br/>RAG 文档检索”];
+  research_tools --> research_image_analysis[“image_analysis<br/>图片食材分析”];
+  research_tools --> research_web_search[“web_search<br/>联网搜索”];
+    research_tools --> research_react;
+    research_react -. “完成” .-> research_out((“ “));
+  end
+  research_agent --> supervisor;
+
+  %% ====== meal_plan 分支：Send 并行扇出 ======
+  meal_planner -. “无菜品（回退）” .-> supervisor;
+  meal_planner -. “Send” .-> dish_0[“dish_researcher<br/>菜品 A”];
+  dish_0 --> meal_aggregator;
+  meal_planner -. “Send” .-> dish_1[“dish_researcher<br/>菜品 B”];
+  dish_1 --> meal_aggregator;
+  meal_planner -. “Send” .-> dish_2[“dish_researcher<br/>菜品 N...”];
+  dish_2 --> meal_aggregator;
+  meal_aggregator[“meal_aggregator<br/>结果汇总”] --> finish;
+
+  %% ====== off_topic 分支 ======
+  gentle_refuse --> finish;
+
+  %% 样式
+  style intent_classifier fill:#e8f4fd,stroke:#4a90d9
+  style supervisor fill:#e8eaf6,stroke:#3f51b5
+  style chef_agent fill:#e8f5e9,stroke:#4caf50
+  style research_agent fill:#fff8e1,stroke:#ffc107
+  style meal_planner fill:#fff3e0,stroke:#ff9800
+  style meal_aggregator fill:#fff3e0,stroke:#ff9800
+  style gentle_refuse fill:#fce4ec,stroke:#e91e63

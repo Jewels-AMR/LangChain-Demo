@@ -1491,6 +1491,9 @@
 
     panel.appendChild(step);
     activeToolStepEls.set(key, step);
+    if (event.args && Object.keys(event.args).length > 0) {
+      step.title = `工具参数：\n${JSON.stringify(event.args, null, 2)}`;
+    }
 
     const container = document.getElementById('messages');
     container.scrollTop = container.scrollHeight;
@@ -1513,7 +1516,12 @@
     step.classList.remove('running');
     step.classList.add(event.status === 'error' ? 'error' : 'done');
     step.querySelector('.agent-step-text').textContent = event.message || '工具调用完成';
-    if (event.preview) step.title = event.preview;
+    if (event.args && Object.keys(event.args).length > 0 && !step.title.includes('工具参数')) {
+      step.title = `工具参数：\n${JSON.stringify(event.args, null, 2)}`;
+    }
+
+    const existingTitle = step.title ? `${step.title}\n\n` : '';
+    if (event.preview) step.title = `${existingTitle}工具结果预览：\n${event.preview}`;
 
     const container = document.getElementById('messages');
     container.scrollTop = container.scrollHeight;
